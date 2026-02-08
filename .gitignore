@@ -1,0 +1,24 @@
+# Documentation folder (specifications)
+docs/
+
+# Markdown files except README
+*.md
+!README.md
+!CONTRIBUTING.md
+!LICENSE
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
