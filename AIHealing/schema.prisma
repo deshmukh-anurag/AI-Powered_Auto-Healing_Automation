@@ -1,0 +1,264 @@
+// ============================================================================
+// AUTO-HEAL QA AGENT - PRISMA SCHEMA
+// ============================================================================
+// This schema implements a self-healing browser automation system using:
+// - Agentic Loop (Observe → Think → Act)
+// - RAG-based Healing (Vector similarity for broken selectors)
+// - Cost tracking and analytics
+// ============================================================================
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ============================================================================
+// CORE MODELS
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// User Model - The "Accountability" Layer
+// ----------------------------------------------------------------------------
+// Manages authentication and test suite ownership
+// Note: Password is managed by Wasp's Auth system (not stored here)
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  email     String?  @unique
+  
+  // Email verification tracking (managed by Wasp)
+  isEmailVerified         Boolean   @default(false)
+  emailVerificationSentAt DateTime?
+  passwordResetSentAt     DateTime?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  testSuites TestSuite[]
+
+  @@index([username])
+  @@index([email])
+}
+
+// ----------------------------------------------------------------------------
+// TestSuite Model - The "Mission Control" Layer
+// ----------------------------------------------------------------------------
+// Represents a complete automation goal (e.g., "Login and checkout")
+model TestSuite {
+  id       String   @id @default(uuid())
+  goal     String   // Natural language goal for the AI
+  startUrl String   // Entry point URL
+
+  // Execution Status
+  status String @default("IDLE") // IDLE | RUNNING | PASSED | FAILED | NEEDS_REVIEW
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  startedAt DateTime?
+  endedAt   DateTime?
+
+  // Statistics (Analytics Dashboard)
+  totalSteps   Int @default(0)
+  successSteps Int @default(0)
+  failedSteps  Int @default(0)
+  healedSteps  Int @default(0) // Most important metric!
+
+  // Cost Tracking (Professional-grade)
+  totalTokensUsed Int?   @default(0)
+  estimatedCost   Float? @default(0.0) // In USD
+
+  // Configuration
+  headless Boolean @default(true) // Run browser in headless mode?
+  timeout  Int     @default(30000) // Default timeout in ms
+  model    String  @default("gemini-flash") // AI model: gemini-flash | gemini-pro | gpt-4o
+
+  // Execution Details
+  errorMessage String? // If FAILED, what went wrong?
+  executionTime Int? // Total time in milliseconds
+
+  // Relations
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String
+
+  steps          Step[]
+  executionLogs  ExecutionLog[]
+  aiModelUsages  AIModelUsage[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ----------------------------------------------------------------------------
+// Step Model - The "Action" Layer
+// ----------------------------------------------------------------------------
+// Individual actions in the test (CLICK, TYPE, NAVIGATE, etc.)
+// This is the most complex model - stores the "Memory" (goldenState)
+model Step {
+  id         String   @id @default(uuid())
+  stepNumber Int      // Sequential order within test suite
+
+  // Action Details
+  action   String  // CLICK | TYPE | NAVIGATE | WAIT | ASSERT | COMPLETE
+  selector String  // CSS/XPath selector
+  value    String? // Text to type (for TYPE actions) or URL (for NAVIGATE)
+
+  // The Heart of Self-Healing: Golden State
+  // Stores semantic snapshot when element was last working
+  // Example: { "role": "button", "text": "Sign In", "ariaLabel": "Login", "position": {...} }
+  goldenState Json
+
+  // Execution Status
+  status String @default("PENDING") // PENDING | SUCCESS | FAILED | HEALED | SKIPPED
+
+  // AI Decision Context
+  confidence Float?  @default(1.0) // AI confidence (0.0 - 1.0)
+  reasoning  String? // What the LLM was "thinking"
+
+  // Results
+  errorMessage  String?
+  screenshot    String? // Path to screenshot
+  executionTime Int? // Time taken in ms
+
+  // Timestamps
+  executedAt DateTime @default(now())
+
+  // Relations
+  testSuite   TestSuite @relation(fields: [testSuiteId], references: [id], onDelete: Cascade)
+  testSuiteId String
+
+  healingEvents HealingEvent[]
+
+  @@index([testSuiteId])
+  @@index([status])
+  @@index([stepNumber])
+}
+
+// ----------------------------------------------------------------------------
+// HealingEvent Model - The "Repair" Layer
+// ----------------------------------------------------------------------------
+// Records each self-healing attempt when a selector breaks
+model HealingEvent {
+  id String @id @default(uuid())
+
+  // Selectors
+  oldSelector String // The broken one (e.g., #btn-old)
+  newSelector String // The recovered one (e.g., .btn-new)
+
+  // Similarity Metrics
+  confidence Float // Cosine similarity score (0.0 - 1.0)
+  matchedOn  Json // What matched: { "text": true, "role": true, "position": false }
+
+  // Healing Strategy
+  strategy String @default("RAG_VECTOR") // RAG_VECTOR | TEXT_SIMILARITY | XPATH_FALLBACK | MANUAL_OVERRIDE
+
+  // Success Tracking
+  wasSuccessful        Boolean @default(false) // Did the retry work?
+  requiresManualReview Boolean @default(false) // Flag for human verification
+  manuallyConfirmed    Boolean @default(false) // Human approved this fix
+
+  // Metadata
+  timestamp DateTime @default(now())
+  metadata  Json? // Additional context
+
+  // Relations
+  step   Step   @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  stepId String
+
+  @@index([stepId])
+  @@index([confidence])
+  @@index([wasSuccessful])
+}
+
+// ============================================================================
+// SUPPORTING MODELS (Expert-Level Features)
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// ExecutionLog Model - The "Audit Trail" Layer
+// ----------------------------------------------------------------------------
+// Detailed logs for debugging and analysis
+model ExecutionLog {
+  id String @id @default(uuid())
+
+  level   String // INFO | WARN | ERROR | DEBUG
+  message String @db.Text // Can be long
+  context Json? // Additional structured data
+
+  timestamp DateTime @default(now())
+
+  // Relations
+  testSuite   TestSuite? @relation(fields: [testSuiteId], references: [id], onDelete: Cascade)
+  testSuiteId String?
+
+  @@index([testSuiteId])
+  @@index([level])
+  @@index([timestamp])
+}
+
+// ----------------------------------------------------------------------------
+// VectorEmbedding Model - The "Deduplication" Layer
+// ----------------------------------------------------------------------------
+// Caches vector embeddings to save money and time
+model VectorEmbedding {
+  id String @id @default(uuid())
+
+  // Element Identification
+  elementType String // button | input | link | etc.
+  elementData Json // The data that was embedded
+
+  // Vector Data (stored as JSON array or binary)
+  embeddingHash String  @unique // MD5/SHA256 of elementData for quick lookup
+  embedding     Json? // The actual vector (768-dimensional array)
+  embeddingId   String? // ChromaDB ID if stored externally
+
+  // Metadata
+  model     String   @default("gemini-embedding-001")
+  createdAt DateTime @default(now())
+  usageCount Int     @default(0) // How many times reused
+
+  @@index([embeddingHash])
+  @@index([elementType])
+}
+
+// ----------------------------------------------------------------------------
+// AIModelUsage Model - The "Cost Analysis" Layer
+// ----------------------------------------------------------------------------
+// Tracks every AI API call for cost optimization and A/B testing
+model AIModelUsage {
+  id String @id @default(uuid())
+
+  // Model Details
+  modelName    String // gemini-1.5-flash | gemini-1.5-pro | gpt-4o
+  provider     String @default("google") // google | openai
+  operation    String // generate | embed | chat
+
+  // Token Metrics
+  tokensInput  Int
+  tokensOutput Int
+  totalTokens  Int
+
+  // Cost (calculated based on provider pricing)
+  estimatedCost Float @default(0.0)
+
+  // Performance
+  latencyMs Int? // Response time
+  cached    Boolean @default(false) // Was this a cached response?
+
+  // Context
+  timestamp DateTime @default(now())
+
+  // Relations
+  testSuite   TestSuite? @relation(fields: [testSuiteId], references: [id], onDelete: Cascade)
+  testSuiteId String?
+
+  @@index([testSuiteId])
+  @@index([modelName])
+  @@index([timestamp])
+}
