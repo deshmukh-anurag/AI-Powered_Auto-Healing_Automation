@@ -1,7 +1,11 @@
 // ============================================================================
-// AGENT LOOP - Main Orchestrator
+// AGENT LOOP - Main Orchestrator with True RAG
 // ============================================================================
-// This module orchestrates the Observe → Think → Act loop with self-healing
+// This module orchestrates the Observe → Think → Act loop with:
+// 1. Vector Database lookup BEFORE each action (persistent memory)
+// 2. Golden State saving AFTER successful actions
+// 3. RAG healing on failures with DB updates
+// 4. Final script generation
 // ============================================================================
 
 import type { Page } from "puppeteer";
@@ -9,6 +13,16 @@ import { captureSnapshot, waitForPageStable } from "./observer";
 import { think, type AIModelConfig, type Action } from "./thinker";
 import { act, type ActionResult } from "./actor";
 import { healSelector, recordSuccess, recordFailure, type SelectorHistory } from "./healer";
+import { 
+  saveGoldenState, 
+  findPersistentSelector, 
+  updatePersistentSelector 
+} from "./vectorDB";
+import { 
+  generateElementEmbedding, 
+  generateActionEmbedding,
+  type EmbeddingConfig 
+} from "./embeddings";
 
 // ============================================================================
 // TYPES
@@ -20,6 +34,8 @@ export interface AgentConfig {
   maxSteps: number;
   timeout: number;
   aiModel: AIModelConfig;
+  testSuiteId: string; // For Vector DB storage
+  embeddingConfig: EmbeddingConfig; // For generating embeddings
 }
 
 export interface AgentResult {
@@ -44,6 +60,8 @@ export interface StepLog {
   };
   reasoning: string;
   timestamp: Date;
+  selectorUsed?: string; // The actual selector that worked (for script generation)
+  selectorType?: "css" | "xpath" | "testId" | "aria";
 }
 
 // ============================================================================
@@ -132,9 +150,59 @@ export async function runAgentLoop(
       previousActions.push(action);
 
       // Find the target element
-      const targetElement = snapshot.actionableElements.find(
+      let targetElement = snapshot.actionableElements.find(
         el => el.id === action.targetElementId
       );
+
+      if (!targetElement) {
+        console.log("❌ Target element not found");
+        failedSteps++;
+        logs.push({
+          stepNumber: step,
+          action,
+          result: null,
+          healing: { attempted: false, successful: false },
+          reasoning: "Target element not found in snapshot",
+          timestamp: new Date(),
+        });
+        break;
+      }
+
+      // === NEW RAG LOGIC START ===
+      // Check if we have a "Healed" version of this step from a previous run
+      console.log("🔍 Checking Vector DB for persistent selector...");
+      const actionEmbedding = await generateActionEmbedding(action, config.embeddingConfig);
+      const knownSelector = await findPersistentSelector(
+        config.testSuiteId,
+        action.description,
+        actionEmbedding
+      );
+
+      if (knownSelector && knownSelector.confidence > 0.85) {
+        console.log(`✅ Found persistent selector from previous run (${(knownSelector.confidence * 100).toFixed(1)}% confidence)`);
+        
+        // Find the element using the known good selector
+        const healedElement = snapshot.actionableElements.find(
+          el => {
+            if (knownSelector.selectorType === "css") {
+              return el.selectors.css === knownSelector.selector;
+            } else if (knownSelector.selectorType === "xpath") {
+              return el.selectors.xpath === knownSelector.selector;
+            } else if (knownSelector.selectorType === "testId") {
+              return el.selectors.testId === knownSelector.selector;
+            } else if (knownSelector.selectorType === "aria") {
+              return el.selectors.ariaLabel === knownSelector.selector;
+            }
+            return false;
+          }
+        );
+
+        if (healedElement) {
+          targetElement = healedElement;
+          action.targetElementId = healedElement.id;
+        }
+      }
+      // === NEW RAG LOGIC END ===
 
       // 3. ACT: Execute the action
       let actionResult = await act(action, page, snapshot.actionableElements);
@@ -142,6 +210,8 @@ export async function runAgentLoop(
       // 4. HEAL: If action failed, try to heal the selector
       let healingAttempted = false;
       let healingSuccessful = false;
+      let selectorUsed = targetElement.selectors.css || targetElement.selectors.xpath || "";
+      let selectorType: "css" | "xpath" | "testId" | "aria" = "css";
 
       if (!actionResult.success && targetElement) {
         console.log("🔧 Action failed, attempting self-healing...");
@@ -151,16 +221,22 @@ export async function runAgentLoop(
           action,
           targetElement,
           snapshot.actionableElements,
-          history
+          history,
+          config.testSuiteId,
+          config.embeddingConfig
         );
 
         if (healingResult.healed && healingResult.healedSelector) {
-          console.log(`✅ Selector healed! Confidence: ${healingResult.confidence}`);
+          console.log(`✅ Selector healed via ${healingResult.method}! Confidence: ${healingResult.confidence}`);
           
           // Retry the action with healed selector
-          // Update the element with new selector
           const healedElement = snapshot.actionableElements.find(
-            el => el.selectors.css === healingResult.healedSelector
+            el => {
+              if (healingResult.selectorType === "css") return el.selectors.css === healingResult.healedSelector;
+              if (healingResult.selectorType === "xpath") return el.selectors.xpath === healingResult.healedSelector;
+              if (healingResult.selectorType === "testId") return el.selectors.testId === healingResult.healedSelector;
+              return false;
+            }
           );
 
           if (healedElement) {
@@ -174,6 +250,22 @@ export async function runAgentLoop(
               healedSteps++;
               healingSuccessful = true;
               recordSuccess(action, healedElement);
+              
+              // === UPDATE VECTOR DB with the healed selector ===
+              if (healingResult.method === "text-similarity" || healingResult.method === "structural-similarity") {
+                console.log("💾 Updating Vector DB with healed selector...");
+                const elementEmbedding = await generateElementEmbedding(healedElement, config.embeddingConfig);
+                await updatePersistentSelector(
+                  config.testSuiteId,
+                  action.description,
+                  healingResult.healedSelector,
+                  healingResult.selectorType || "css",
+                  elementEmbedding
+                );
+              }
+              
+              selectorUsed = healingResult.healedSelector;
+              selectorType = healingResult.selectorType || "css";
             }
           }
         }
@@ -184,8 +276,23 @@ export async function runAgentLoop(
           }
         }
       } else if (actionResult.success && targetElement) {
-        // Record successful execution
+        // === SUCCESS: Save this to the Vector DB as the "Golden State" ===
+        console.log("💾 Saving successful action to Vector DB...");
         recordSuccess(action, targetElement);
+        
+        try {
+          const elementEmbedding = await generateElementEmbedding(targetElement, config.embeddingConfig);
+          await saveGoldenState(
+            config.testSuiteId,
+            action.description,
+            selectorUsed,
+            selectorType,
+            targetElement,
+            elementEmbedding
+          );
+        } catch (error) {
+          console.warn("⚠️  Failed to save golden state:", error);
+        }
       }
 
       // Track results
@@ -195,7 +302,7 @@ export async function runAgentLoop(
         failedSteps++;
       }
 
-      // Log this step
+      // Log this step (with selector info for script generation)
       logs.push({
         stepNumber: step,
         action,
@@ -206,6 +313,8 @@ export async function runAgentLoop(
         },
         reasoning: thinkingResult.reasoning,
         timestamp: new Date(),
+        selectorUsed: actionResult.success ? selectorUsed : undefined,
+        selectorType: actionResult.success ? selectorType : undefined,
       });
 
       // If action failed and couldn't be healed, stop
