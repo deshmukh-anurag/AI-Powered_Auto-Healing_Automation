@@ -2,6 +2,36 @@
 
 Basic starter is a well-rounded template that showcases the most important bits of working with Wasp.
 
+## 🚀 AI Healing Agent Features
+
+This template includes an **AI-Powered Auto-Healing Test Automation Agent** with:
+- 🤖 Autonomous browser navigation using Gemini AI
+- 🔧 Self-healing selectors with RAG (Retrieval-Augmented Generation)
+- 📊 **FREE Gemini embeddings** for semantic matching (no cost!)
+- 🎯 4-layer healing strategy (Vector DB → Exact → Fuzzy → Structural)
+- 💾 Persistent memory with ChromaDB
+
+### Embedding Providers
+
+The agent supports multiple embedding providers for semantic healing:
+
+1. **Google Gemini** (RECOMMENDED - FREE! ✨)
+   - Model: `text-embedding-004` (768 dimensions)
+   - Cost: FREE
+   - Best for: Production, demos, real-world testing
+
+2. **OpenAI** (Paid)
+   - Model: `text-embedding-3-small` (1536 dimensions)
+   - Cost: $0.00002 per 1K tokens
+   - Best for: Maximum accuracy
+
+3. **Local** (Testing only)
+   - Simple hash-based (384 dimensions)
+   - Cost: FREE
+   - Best for: Offline testing
+
+See [EMBEDDING_PROVIDERS.md](./EMBEDDING_PROVIDERS.md) for detailed setup instructions.
+
 ## Prerequisites
 
 - **Node.js** (newest LTS version recommended): We recommend install Node through a Node version manager, e.g. `nvm`.
