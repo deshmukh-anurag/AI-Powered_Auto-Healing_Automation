@@ -89,6 +89,8 @@ model TestSuite {
   steps          Step[]
   executionLogs  ExecutionLog[]
   aiModelUsages  AIModelUsage[]
+  goldenStates   GoldenState[]
+  generatedScripts GeneratedScript[]
 
   @@index([userId])
   @@index([status])
@@ -225,6 +227,81 @@ model VectorEmbedding {
 
   @@index([embeddingHash])
   @@index([elementType])
+}
+
+// ----------------------------------------------------------------------------
+// GoldenState Model - The "Persistent Memory" Layer (NEW!)
+// ----------------------------------------------------------------------------
+// Stores verified working selectors from successful test runs
+// This is the backup/reference for ChromaDB vector database
+model GoldenState {
+  id String @id @default(uuid())
+
+  // Test Context
+  testSuite   TestSuite @relation(fields: [testSuiteId], references: [id], onDelete: Cascade)
+  testSuiteId String
+
+  // Step Identification
+  stepDescription String // "Click login button", "Type username"
+  stepIndex       Int // Position in the test flow
+
+  // Selector Information (The "Golden" working selector)
+  selector     String // The CSS/XPath selector that worked
+  selectorType String @default("css") // css | xpath | testId | aria
+
+  // Element Metadata (for semantic matching)
+  elementTag         String // button | input | a | etc.
+  elementText        String? // Visible text
+  elementRole        String? // ARIA role
+  elementAttributes  Json? // Other helpful attributes
+
+  // Vector Embedding Reference
+  embeddingHash String? // Link to VectorEmbedding table
+  chromaDbId    String? // ID in ChromaDB for vector similarity search
+
+  // Success Metrics
+  successCount  Int      @default(1) // How many times this selector worked
+  lastUsedAt    DateTime @default(now())
+  confidence    Float    @default(1.0) // 0-1 confidence score
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([testSuiteId, stepDescription])
+  @@index([testSuiteId])
+  @@index([embeddingHash])
+  @@index([lastUsedAt])
+}
+
+// ----------------------------------------------------------------------------
+// GeneratedScript Model - The "Output" Layer (NEW!)
+// ----------------------------------------------------------------------------
+// Stores the final healed Puppeteer scripts
+model GeneratedScript {
+  id String @id @default(uuid())
+
+  // Test Context
+  testSuite   TestSuite @relation(fields: [testSuiteId], references: [id], onDelete: Cascade)
+  testSuiteId String
+
+  // Script Details
+  scriptName    String // e.g., "healed_login_test.js"
+  scriptContent String @db.Text // The actual Puppeteer code
+  scriptType    String @default("basic") // basic | advanced
+
+  // Generation Info
+  generatedAt    DateTime @default(now())
+  totalSteps     Int // How many steps in the script
+  healedSteps    Int // How many were healed
+  healingRate    Float // Percentage of steps that were healed
+
+  // Usage Tracking
+  downloadCount Int @default(0)
+  lastDownload  DateTime?
+
+  @@index([testSuiteId])
+  @@index([generatedAt])
 }
 
 // ----------------------------------------------------------------------------
