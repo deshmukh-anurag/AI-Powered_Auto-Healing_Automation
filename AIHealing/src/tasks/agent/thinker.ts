@@ -5,6 +5,7 @@
 // and decide what action to take next to achieve the goal.
 // ============================================================================
 
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import type { DOMSnapshot } from "./observer";
 
 // ============================================================================
@@ -120,25 +121,69 @@ async function callAIModel(
   prompt: string,
   config: AIModelConfig
 ): Promise<string> {
-  // TODO: Implement actual API calls to Gemini/GPT
-  // For now, return a stub response
-  
   console.log("🤖 Thinker: Calling AI model:", config.model);
-  
-  // This is a stub - will be implemented with actual API integration
-  const stubResponse = {
-    isGoalAchieved: false,
-    reasoning: "I can see a login form with username and password fields. Need to fill them.",
-    nextAction: {
-      type: "type",
-      targetElementId: "element-0",
-      value: "test@example.com",
-      description: "Type email into username field"
-    },
-    confidence: 0.9
-  };
 
-  return JSON.stringify(stubResponse);
+  try {
+    if (config.model === "gemini-flash" || config.model === "gemini-pro") {
+      return await callGemini(prompt, config);
+    } else if (config.model === "gpt-4o") {
+      throw new Error("GPT-4o is not free. Please use gemini-flash or gemini-pro for this university project.");
+    } else {
+      throw new Error(`Unsupported model: ${config.model}`);
+    }
+  } catch (error) {
+    console.error("❌ Thinker: AI model call failed:", error);
+    
+    // Return a safe fallback response
+    const fallbackResponse = {
+      isGoalAchieved: false,
+      reasoning: `AI model call failed: ${error instanceof Error ? error.message : 'Unknown error'}. Falling back to safe navigation.`,
+      nextAction: {
+        type: "wait",
+        description: "Wait for manual intervention due to AI failure"
+      },
+      confidence: 0.1
+    };
+    
+    return JSON.stringify(fallbackResponse);
+  }
+}
+
+/**
+ * Call Google Gemini API (FREE TIER)
+ * Gemini 1.5 Flash and Pro have generous free quotas
+ */
+async function callGemini(
+  prompt: string,
+  config: AIModelConfig
+): Promise<string> {
+  // Initialize Gemini client
+  const genAI = new GoogleGenerativeAI(config.apiKey);
+  
+  // Select the model
+  const modelName = config.model === "gemini-flash" 
+    ? "gemini-2.5-flash"  // Fastest, most cost-effective
+    : "gemini-2.5-pro";    // More capable
+  
+  const model = genAI.getGenerativeModel({ 
+    model: modelName,
+    generationConfig: {
+      temperature: config.temperature ?? 0.7,
+      maxOutputTokens: config.maxTokens ?? 2048,
+      responseMimeType: "application/json", // Force JSON output
+    },
+  });
+
+  console.log(`🚀 Thinker: Sending request to ${modelName}...`);
+  
+  // Call the API
+  const result = await model.generateContent(prompt);
+  const response = result.response;
+  const text = response.text();
+  
+  console.log(`✅ Thinker: Received response (${text.length} chars)`);
+  
+  return text;
 }
 
 /**
@@ -169,18 +214,19 @@ function parseAIResponse(response: string): ThinkingResult {
 
 /**
  * Calculate cost of an AI model call
+ * NOTE: Gemini models are FREE for university/research projects within quota limits
  */
 export function calculateCost(
   tokensUsed: number,
   model: string
 ): number {
-  // Pricing per 1M tokens (approximate)
+  // Pricing per 1M tokens (Gemini is FREE within quota)
   const pricing: Record<string, number> = {
-    "gemini-flash": 0.35,
-    "gemini-pro": 1.25,
-    "gpt-4o": 5.00,
+    "gemini-flash": 0.00,  // FREE (up to 15 requests/min, 1M tokens/min, 1500 requests/day)
+    "gemini-pro": 0.00,    // FREE (up to 2 requests/min, 32K tokens/min, 50 requests/day)
+    "gpt-4o": 5.00,        // NOT RECOMMENDED - costs money
   };
 
-  const pricePerMillion = pricing[model] || 1.0;
+  const pricePerMillion = pricing[model] || 0.0;
   return (tokensUsed / 1_000_000) * pricePerMillion;
 }

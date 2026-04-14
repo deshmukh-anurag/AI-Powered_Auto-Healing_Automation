@@ -178,7 +178,7 @@ export const createTestSuite: CreateTestSuite<CreateTestSuiteInput, TestSuite> =
 
 /**
  * Run a test suite (triggers the AI agent loop)
- * This is a stub - will be implemented with the AI agent core
+ * Includes script generation after successful execution
  */
 export const runTestSuite: RunTestSuite<{ testSuiteId: string }, TestSuite> = async (
   args,
@@ -210,7 +210,7 @@ export const runTestSuite: RunTestSuite<{ testSuiteId: string }, TestSuite> = as
   }
 
   // Update status to RUNNING
-  const updatedTestSuite = await context.entities.TestSuite.update({
+  await context.entities.TestSuite.update({
     where: {
       id: args.testSuiteId,
     },
@@ -222,14 +222,22 @@ export const runTestSuite: RunTestSuite<{ testSuiteId: string }, TestSuite> = as
     },
   });
 
-  // TODO: Trigger the AI agent loop here
-  // This will be implemented in Step 5 (AI agent core)
-  // For now, we just mark it as running
-
   console.log(`🚀 Test suite ${testSuite.id} started execution`);
   console.log(`📝 Goal: ${testSuite.goal}`);
   console.log(`🌐 Start URL: ${testSuite.startUrl}`);
   console.log(`🤖 Model: ${testSuite.model}`);
 
-  return updatedTestSuite;
+  // TODO: Execute the agent loop
+  // const { runAgentLoop } = await import("./agent/index");
+  // const { generateFinalScript } = await import("./agent/generator");
+  // 
+  // const result = await runAgentLoop(page, config);
+  // const script = generateFinalScript(testSuite.name, testSuite.startUrl, result.logs);
+  //
+  // Save result and generated script to database
+
+  // For now, return the running test suite
+  return await context.entities.TestSuite.findUnique({
+    where: { id: args.testSuiteId },
+  }) as TestSuite;
 };

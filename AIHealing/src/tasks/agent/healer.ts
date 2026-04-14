@@ -1,12 +1,15 @@
 // ============================================================================
-// HEALER MODULE - RAG-based Selector Healing
+// HEALER MODULE - RAG-based Selector Healing with Vector DB
 // ============================================================================
-// This module implements the self-healing capability using vector similarity
-// to find alternative selectors when the original ones break.
+// This module implements the self-healing capability using:
+// 1. Vector Database (persistent memory across test runs)
+// 2. Fallback to simple similarity matching
 // ============================================================================
 
 import type { ActionableElement, ElementSelectors } from "./observer";
 import type { Action } from "./thinker";
+import { vectorSimilaritySearch, type VectorSearchResult } from "./vectorDB";
+import { generateElementEmbedding, type EmbeddingConfig } from "./embeddings";
 
 // ============================================================================
 // TYPES
@@ -16,8 +19,9 @@ export interface HealingResult {
   healed: boolean;
   originalSelector: string;
   healedSelector?: string;
+  selectorType?: "css" | "xpath" | "testId" | "aria";
   confidence: number;
-  method: "exact-match" | "text-similarity" | "structural-similarity" | "failed";
+  method: "vector-db" | "exact-match" | "text-similarity" | "structural-similarity" | "failed";
 }
 
 export interface SelectorHistory {
@@ -32,18 +36,47 @@ export interface SelectorHistory {
 // ============================================================================
 
 /**
- * Attempt to heal a broken selector by finding a similar element
- * This is the "RAG-based Healing" component
+ * Attempt to heal a broken selector using Vector DB first, then fallback strategies
+ * This is the "True RAG-based Healing" component with persistent memory
  */
 export async function healSelector(
   brokenAction: Action,
   brokenElement: ActionableElement,
   currentElements: ActionableElement[],
-  history: SelectorHistory[]
+  history: SelectorHistory[],
+  testSuiteId: string,
+  embeddingConfig: EmbeddingConfig
 ): Promise<HealingResult> {
   console.log("🔧 Healer: Attempting to heal broken selector...");
 
-  // Strategy 1: Try exact text match first
+  // Strategy 1: Try Vector Database lookup (PERSISTENT MEMORY)
+  try {
+    const elementText = `${brokenElement.tagName} ${brokenElement.text || ""}`.trim();
+    const embedding = await generateElementEmbedding(brokenElement, embeddingConfig);
+    
+    const vectorResult = await vectorSimilaritySearch(
+      testSuiteId,
+      brokenAction.description,
+      embedding,
+      currentElements
+    );
+
+    if (vectorResult && vectorResult.confidence > 0.85) {
+      console.log(`✅ Healer: Found in Vector DB (${(vectorResult.confidence * 100).toFixed(1)}% confidence)`);
+      return {
+        healed: true,
+        originalSelector: brokenElement.selectors.css || brokenElement.selectors.xpath || "",
+        healedSelector: vectorResult.selector,
+        selectorType: vectorResult.selectorType,
+        confidence: vectorResult.confidence,
+        method: "vector-db",
+      };
+    }
+  } catch (error) {
+    console.warn("⚠️  Vector DB search failed, falling back to simple matching:", error);
+  }
+
+  // Strategy 2: Try exact text match
   const textMatch = findByExactText(brokenElement, currentElements);
   if (textMatch) {
     console.log("✅ Healer: Found exact text match");
@@ -51,38 +84,42 @@ export async function healSelector(
       healed: true,
       originalSelector: brokenElement.selectors.css || "",
       healedSelector: textMatch.selectors.css,
+      selectorType: "css",
       confidence: 0.95,
       method: "exact-match",
     };
   }
 
-  // Strategy 2: Try similar text (fuzzy matching)
-  const similarTextMatch = findBySimilarText(brokenElement, currentElements);
-  if (similarTextMatch && similarTextMatch.confidence > 0.7) {
-    console.log("✅ Healer: Found similar text match");
+  // Strategy 3: Try fuzzy text match (Levenshtein)
+  const similarText = findBySimilarText(brokenElement, currentElements);
+  if (similarText && similarText.element && similarText.confidence > 0.7) {
+    console.log(`✅ Healer: Found similar text (${(similarText.confidence * 100).toFixed(1)}% match)`);
     return {
       healed: true,
       originalSelector: brokenElement.selectors.css || "",
-      healedSelector: similarTextMatch.element.selectors.css,
-      confidence: similarTextMatch.confidence,
+      healedSelector: similarText.element.selectors.css,
+      selectorType: "css",
+      confidence: similarText.confidence,
       method: "text-similarity",
     };
   }
 
-  // Strategy 3: Try structural similarity (same tag, similar attributes)
+  // Strategy 4: Try structural similarity
   const structuralMatch = findByStructuralSimilarity(brokenElement, currentElements);
-  if (structuralMatch && structuralMatch.confidence > 0.6) {
-    console.log("✅ Healer: Found structural match");
+  if (structuralMatch && structuralMatch.element && structuralMatch.confidence > 0.6) {
+    console.log(`✅ Healer: Found structural match (${(structuralMatch.confidence * 100).toFixed(1)}% match)`);
     return {
       healed: true,
       originalSelector: brokenElement.selectors.css || "",
       healedSelector: structuralMatch.element.selectors.css,
+      selectorType: "css",
       confidence: structuralMatch.confidence,
       method: "structural-similarity",
     };
   }
 
-  console.log("❌ Healer: Unable to heal selector");
+  // All strategies failed
+  console.log("❌ Healer: Could not find alternative selector");
   return {
     healed: false,
     originalSelector: brokenElement.selectors.css || "",

@@ -184,7 +184,7 @@ export async function waitForPageStable(page: Page, timeout: number = 5000): Pro
   try {
     await page.waitForNetworkIdle({ timeout });
   } catch (error) {
-    console.warn("⚠️ Observer: Page did not become idle within timeout");
+    console.warn(" Observer: Page did not become idle within timeout");
   }
 }
 
