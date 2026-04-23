@@ -13,13 +13,41 @@ import type {
   GetTestSuites,
   GetTestSuiteStats,
   GetExecutionLogs,
+  GetTestSuite,
   CreateTestSuite,
   RunTestSuite,
+  StopTestSuite,
 } from "wasp/server/operations";
 import { HttpError } from "wasp/server";
 import puppeteer from "puppeteer";
+import type { Browser } from "puppeteer";
 import { runAgentLoop } from "./agent/index";
 import { generateFinalScript } from "./agent/generator";
+
+// ============================================================================
+// RUNTIME REGISTRY (module-level, not persisted)
+// ============================================================================
+// Tracks running test suites so we can request cancellation + tear down
+// Puppeteer sessions if the user hits "Stop".
+// ============================================================================
+
+type RunningEntry = {
+  browser: Browser;
+  cancelled: boolean;
+};
+
+const RUNNING_SUITES = new Map<string, RunningEntry>();
+
+const requestCancel = (testSuiteId: string): boolean => {
+  const entry = RUNNING_SUITES.get(testSuiteId);
+  if (!entry) return false;
+  entry.cancelled = true;
+  return true;
+};
+
+const shouldCancel = (testSuiteId: string): boolean => {
+  return RUNNING_SUITES.get(testSuiteId)?.cancelled ?? false;
+};
 
 // ============================================================================
 // TYPES
@@ -126,6 +154,28 @@ export const getTestSuiteStats: GetTestSuiteStats<void, TestSuiteStats> = async 
   }
 
   return stats;
+};
+
+/**
+ * Get a single test suite by ID (with live status for the detail page)
+ */
+export const getTestSuite: GetTestSuite<{ testSuiteId: string }, TestSuite> = async (
+  args,
+  context
+) => {
+  if (!context.user) {
+    throw new HttpError(401, "Unauthorized - Please log in");
+  }
+
+  const testSuite = await context.entities.TestSuite.findUnique({
+    where: { id: args.testSuiteId },
+  });
+
+  if (!testSuite || testSuite.userId !== context.user.id) {
+    throw new HttpError(403, "Forbidden or not found");
+  }
+
+  return testSuite;
 };
 
 /**
@@ -271,6 +321,9 @@ export const runTestSuite: RunTestSuite<{ testSuiteId: string }, TestSuite> = as
   });
   const page = await browser.newPage();
 
+  // Register this run so stopTestSuite can cancel it
+  RUNNING_SUITES.set(testSuite.id, { browser, cancelled: false });
+
   let result;
   let script = "";
 
@@ -289,7 +342,8 @@ export const runTestSuite: RunTestSuite<{ testSuiteId: string }, TestSuite> = as
       embeddingConfig: {
         provider: "gemini", // Let's default to gemini as stated in amazon demo
         apiKey: process.env.GEMINI_API_KEY || ""
-      }
+      },
+      shouldCancel: () => shouldCancel(testSuite.id)
     });
 
     // Generate script
@@ -331,17 +385,87 @@ export const runTestSuite: RunTestSuite<{ testSuiteId: string }, TestSuite> = as
 
   } catch (error: any) {
     console.error("Agent Loop Error: ", error);
+    const wasCancelled = shouldCancel(testSuite.id);
     await context.entities.TestSuite.update({
       where: { id: testSuite.id },
       data: {
-        status: "FAILED",
+        status: wasCancelled ? "STOPPED" : "FAILED",
         endedAt: new Date(),
-        errorMessage: error.message
+        errorMessage: wasCancelled ? "Stopped by user" : error.message
       }
     });
   } finally {
-    await browser.close();
+    RUNNING_SUITES.delete(testSuite.id);
+    try { await browser.close(); } catch { /* already closed */ }
   }
+
+  // If the user pressed Stop after a clean exit, reflect STOPPED status
+  if (shouldCancel(testSuite.id)) {
+    await context.entities.TestSuite.update({
+      where: { id: testSuite.id },
+      data: { status: "STOPPED", endedAt: new Date() }
+    });
+  }
+
+  return await context.entities.TestSuite.findUnique({
+    where: { id: args.testSuiteId },
+  }) as TestSuite;
+};
+
+/**
+ * Stop a currently running test suite
+ *
+ * Signals the in-memory runner to abort at the next step boundary,
+ * tears down the Puppeteer browser, and flips the DB status to STOPPED.
+ */
+export const stopTestSuite: StopTestSuite<{ testSuiteId: string }, TestSuite> = async (
+  args,
+  context
+) => {
+  if (!context.user) {
+    throw new HttpError(401, "Unauthorized - Please log in");
+  }
+
+  const testSuite = await context.entities.TestSuite.findUnique({
+    where: { id: args.testSuiteId },
+  });
+
+  if (!testSuite) {
+    throw new HttpError(404, "Test suite not found");
+  }
+
+  if (testSuite.userId !== context.user.id) {
+    throw new HttpError(403, "Forbidden - You don't own this test suite");
+  }
+
+  const didSignal = requestCancel(args.testSuiteId);
+
+  // Also log a STOP entry so the user sees it in the live log stream
+  await context.entities.ExecutionLog.create({
+    data: {
+      level: "WARN",
+      message: didSignal
+        ? "🛑 Stop requested by user — aborting at next step boundary"
+        : "🛑 Stop requested but no active run found — marking suite as STOPPED",
+      testSuiteId: args.testSuiteId,
+    },
+  });
+
+  // Try to close the browser immediately so long-running Puppeteer calls fail fast
+  const entry = RUNNING_SUITES.get(args.testSuiteId);
+  if (entry) {
+    try { await entry.browser.close(); } catch { /* already closed */ }
+  }
+
+  // Optimistic DB flip — the runTestSuite finally-block will also enforce this
+  await context.entities.TestSuite.update({
+    where: { id: args.testSuiteId },
+    data: {
+      status: "STOPPED",
+      endedAt: new Date(),
+      errorMessage: "Stopped by user",
+    },
+  });
 
   return await context.entities.TestSuite.findUnique({
     where: { id: args.testSuiteId },

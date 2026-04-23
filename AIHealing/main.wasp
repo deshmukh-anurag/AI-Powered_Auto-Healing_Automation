@@ -90,6 +90,11 @@ query getExecutionLogs {
   entities: [ExecutionLog, TestSuite]
 }
 
+query getTestSuite {
+  fn: import { getTestSuite } from "@src/tasks/operations",
+  entities: [TestSuite]
+}
+
 // Actions - Write Operations
 action createTestSuite {
   fn: import { createTestSuite } from "@src/tasks/operations",
@@ -99,5 +104,10 @@ action createTestSuite {
 action runTestSuite {
   fn: import { runTestSuite } from "@src/tasks/operations",
   entities: [TestSuite, Step, ExecutionLog]
+}
+
+action stopTestSuite {
+  fn: import { stopTestSuite } from "@src/tasks/operations",
+  entities: [TestSuite, ExecutionLog]
 }
 // #endregion Tasks

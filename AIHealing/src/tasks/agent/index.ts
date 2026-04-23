@@ -36,6 +36,8 @@ export interface AgentConfig {
   aiModel: AIModelConfig;
   testSuiteId: string; // For Vector DB storage
   embeddingConfig: EmbeddingConfig; // For generating embeddings
+  // Optional cancellation hook — checked at every step boundary
+  shouldCancel?: () => boolean;
 }
 
 export interface AgentResult {
@@ -98,6 +100,20 @@ export async function runAgentLoop(
 
     // Main loop
     for (let step = 1; step <= config.maxSteps; step++) {
+      // Cancellation check — exit cleanly if the user pressed Stop
+      if (config.shouldCancel?.()) {
+        console.log("🛑 Agent Loop: Cancellation requested — aborting");
+        logs.push({
+          stepNumber: step,
+          action: null,
+          result: null,
+          healing: { attempted: false, successful: false },
+          reasoning: "Run cancelled by user",
+          timestamp: new Date(),
+        });
+        break;
+      }
+
       totalSteps = step;
       console.log(`\n📍 Step ${step}/${config.maxSteps}`);
 
