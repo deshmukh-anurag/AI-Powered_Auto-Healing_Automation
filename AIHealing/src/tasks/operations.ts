@@ -4,17 +4,22 @@
 // This file contains all server-side operations for managing test suites.
 // ============================================================================
 
-import type { 
-  TestSuite, 
+import type {
+  TestSuite,
   User,
+  ExecutionLog
 } from "wasp/entities";
-import type { 
-  GetTestSuites, 
+import type {
+  GetTestSuites,
   GetTestSuiteStats,
+  GetExecutionLogs,
   CreateTestSuite,
   RunTestSuite,
 } from "wasp/server/operations";
 import { HttpError } from "wasp/server";
+import puppeteer from "puppeteer";
+import { runAgentLoop } from "./agent/index";
+import { generateFinalScript } from "./agent/generator";
 
 // ============================================================================
 // TYPES
@@ -123,6 +128,37 @@ export const getTestSuiteStats: GetTestSuiteStats<void, TestSuiteStats> = async 
   return stats;
 };
 
+/**
+ * Get execution logs for a specific test suite
+ */
+export const getExecutionLogs: GetExecutionLogs<{ testSuiteId: string }, ExecutionLog[]> = async (
+  args,
+  context
+) => {
+  if (!context.user) {
+    throw new HttpError(401, "Unauthorized - Please log in");
+  }
+
+  const testSuite = await context.entities.TestSuite.findUnique({
+    where: { id: args.testSuiteId },
+  });
+
+  if (!testSuite || testSuite.userId !== context.user.id) {
+    throw new HttpError(403, "Forbidden or not found");
+  }
+
+  const logs = await context.entities.ExecutionLog.findMany({
+    where: {
+      testSuiteId: args.testSuiteId,
+    },
+    orderBy: {
+      timestamp: "asc",
+    },
+  });
+
+  return logs;
+};
+
 // ============================================================================
 // ACTIONS (Write Operations)
 // ============================================================================
@@ -227,16 +263,86 @@ export const runTestSuite: RunTestSuite<{ testSuiteId: string }, TestSuite> = as
   console.log(`🌐 Start URL: ${testSuite.startUrl}`);
   console.log(`🤖 Model: ${testSuite.model}`);
 
-  // TODO: Execute the agent loop
-  // const { runAgentLoop } = await import("./agent/index");
-  // const { generateFinalScript } = await import("./agent/generator");
-  // 
-  // const result = await runAgentLoop(page, config);
-  // const script = generateFinalScript(testSuite.name, testSuite.startUrl, result.logs);
-  //
-  // Save result and generated script to database
 
-  // For now, return the running test suite
+
+  // Launch Puppeteer
+  const browser = await puppeteer.launch({
+    headless: testSuite.headless
+  });
+  const page = await browser.newPage();
+
+  let result;
+  let script = "";
+
+  try {
+    // Execute agent
+    result = await runAgentLoop(page, {
+      goal: testSuite.goal,
+      startUrl: testSuite.startUrl,
+      maxSteps: 50,
+      timeout: testSuite.timeout,
+      aiModel: {
+        model: testSuite.model as any,
+        apiKey: process.env.GEMINI_API_KEY || ""
+      },
+      testSuiteId: testSuite.id,
+      embeddingConfig: {
+        provider: "gemini", // Let's default to gemini as stated in amazon demo
+        apiKey: process.env.GEMINI_API_KEY || ""
+      }
+    });
+
+    // Generate script
+    script = generateFinalScript(
+      testSuite.goal,
+      testSuite.startUrl,
+      result.logs
+    );
+
+    // Save to database (Assuming GeneratedScript entity exists, otherwise skip/ignore error)
+    try {
+      await (context.entities as any).GeneratedScript?.create({
+        data: {
+          testSuiteId: testSuite.id,
+          scriptName: `${testSuite.id}_healed.js`,
+          scriptContent: script,
+          scriptType: "basic",
+          totalSteps: result.totalSteps,
+          healedSteps: result.healedSteps,
+          healingRate: result.totalSteps > 0 ? result.healedSteps / result.totalSteps : 0
+        }
+      });
+    } catch(dbErr) { console.log("Skipped saving generated script record", dbErr); }
+
+    // Update test suite
+    await context.entities.TestSuite.update({
+      where: { id: testSuite.id },
+      data: {
+        status: result.success ? "PASSED" : "FAILED",
+        endedAt: new Date(),
+        totalSteps: result.totalSteps,
+        successSteps: result.successfulSteps,
+        failedSteps: result.failedSteps,
+        healedSteps: result.healedSteps,
+        executionTime: result.executionTimeMs,
+        estimatedCost: result.totalCost
+      }
+    });
+
+  } catch (error: any) {
+    console.error("Agent Loop Error: ", error);
+    await context.entities.TestSuite.update({
+      where: { id: testSuite.id },
+      data: {
+        status: "FAILED",
+        endedAt: new Date(),
+        errorMessage: error.message
+      }
+    });
+  } finally {
+    await browser.close();
+  }
+
   return await context.entities.TestSuite.findUnique({
     where: { id: args.testSuiteId },
   }) as TestSuite;

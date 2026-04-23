@@ -93,7 +93,7 @@ export async function runAgentLoop(
 
   try {
     // Navigate to start URL
-    await page.goto(config.startUrl, { waitUntil: "networkidle0" });
+    await page.goto(config.startUrl, { waitUntil: "domcontentloaded" });
     await waitForPageStable(page, config.timeout);
 
     // Main loop
@@ -102,6 +102,11 @@ export async function runAgentLoop(
       console.log(`\n📍 Step ${step}/${config.maxSteps}`);
 
       // 1. OBSERVE: Capture current page state
+      // Ensure we are operating on the most recently opened tab (crucial for E-commerce sites that use target="_blank")
+      const pages = await page.browser().pages();
+      page = pages[pages.length - 1];
+      await page.bringToFront();
+      
       const snapshot = await captureSnapshot(page);
 
       // 2. THINK: Decide next action

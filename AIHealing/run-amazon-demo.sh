@@ -27,6 +27,18 @@ fi
 
 # Check Gemini API Key
 echo "2. Checking Gemini API Key..."
+
+# Load .env file if it exists
+if [ -f "$(dirname "$0")/.env" ]; then
+    set -a
+    source "$(dirname "$0")/.env"
+    set +a
+elif [ -f "$(dirname "$0")/.env.server" ]; then
+    set -a
+    source "$(dirname "$0")/.env.server"
+    set +a
+fi
+
 if [ -z "$GEMINI_API_KEY" ]; then
     echo "   ❌ GEMINI_API_KEY not set!"
     echo ""

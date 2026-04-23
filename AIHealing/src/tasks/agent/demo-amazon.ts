@@ -20,14 +20,14 @@ const DEMO_CONFIG = {
     provider: "gemini" as const,
     apiKey: process.env.GEMINI_API_KEY,
     model: "gemini-embedding-001", // FREE Gemini embedding model (768 dimensions)
-    
+
     // Alternative options:
     // provider: "local" as const, // For testing without API
     // provider: "openai" as const, // Requires OpenAI API key
     // apiKey: process.env.OPENAI_API_KEY,
     // model: "text-embedding-3-small"
   },
-  
+
   aiModel: {
     model: "gemini-flash" as const,
     apiKey: process.env.GEMINI_API_KEY!,
@@ -46,9 +46,9 @@ const DEMO_CONFIG = {
  */
 const AMAZON_TEST_SUITE = {
   id: "demo-amazon-macbook-001",
-  name: "Amazon MacBook Purchase Flow",
-  goal: "Search for a MacBook Pro M3, select the first result, and add it to the cart",
-  startUrl: "https://www.amazon.in", // or https://www.amazon.com
+  name: "agent creation testing",
+  goal: "enter the credentials E-mail as anuragdeshmukh61@gmail.com and password as Anurag@123 then from the sidebar scroll and go to the quicvoice dropbox and click agent .this will open the agent page and then create an agent in it",
+  startUrl: "http://localhost:3000/login", // or https://www.amazon.com
   maxSteps: 20,
   timeout: 10000, // Amazon can be slow
 };
@@ -147,12 +147,12 @@ async function runAmazonDemo() {
     logStep("Phase 1: Initialization");
     const browserInstance = await initBrowser();
     const page = await browserInstance.newPage();
-    
+
     // Set user agent to avoid bot detection
     await page.setUserAgent(
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
-    
+
     logSuccess("Browser initialized");
     logInfo("Viewport: 1920x1080");
     logInfo("User Agent: Desktop Chrome");
@@ -174,7 +174,7 @@ async function runAmazonDemo() {
     console.log("\n📝 User Goal:");
     console.log(`   "${AMAZON_TEST_SUITE.goal}"`);
     console.log("\n");
-    
+
     logInfo("Agent will autonomously:");
     logInfo("  1️⃣  Navigate to Amazon");
     logInfo("  2️⃣  Find and fill search box");
@@ -216,14 +216,14 @@ async function runAmazonDemo() {
     // Run the agent
     logStep("Phase 6: Agent Execution (Watch the Browser!)");
     console.log("\n⏱️  Starting autonomous execution...\n");
-    
+
     const startTime = Date.now();
     const result = await runAgentLoop(page, config);
     const duration = Date.now() - startTime;
 
     // Display results
     logStep("Phase 7: Execution Results");
-    
+
     console.log("\n📊 Metrics:\n");
     console.log(`   Total Steps Executed:    ${result.totalSteps}`);
     console.log(`   ✅ Successful Steps:     ${result.successfulSteps}`);
@@ -236,23 +236,23 @@ async function runAmazonDemo() {
     // Show detailed step log
     if (result.logs && result.logs.length > 0) {
       logStep("Phase 8: Detailed Execution Log");
-      
+
       result.logs.forEach((log, idx) => {
         const stepNum = log.stepNumber;
         const action = log.action;
         const healing = log.healing;
-        
+
         console.log(`\n📍 Step ${stepNum}:`);
-        
+
         if (action) {
           console.log(`   Action: ${action.type.toUpperCase()}`);
           console.log(`   Goal: "${action.description}"`);
-          
+
           if (log.selectorUsed) {
             console.log(`   Selector: ${log.selectorUsed}`);
           }
         }
-        
+
         if (log.result) {
           if (log.result.success) {
             console.log(`   Result: ✅ Success`);
@@ -260,18 +260,18 @@ async function runAmazonDemo() {
             console.log(`   Result: ❌ Failed - ${log.result.error}`);
           }
         }
-        
+
         if (healing.attempted) {
           console.log(`   🔧 Healing: ${healing.successful ? "✅ HEALED" : "❌ Failed"}`);
         }
-        
+
         console.log(`   Reasoning: ${log.reasoning.substring(0, 80)}...`);
       });
     }
 
     // Final status
     logStep("Phase 9: Final Status");
-    
+
     if (result.success) {
       console.log("\n");
       console.log("╔═══════════════════════════════════════════════════════════════════════════╗");
@@ -290,15 +290,15 @@ async function runAmazonDemo() {
       }
       console.log("╚═══════════════════════════════════════════════════════════════════════════╝");
       console.log("\n");
-      
+
       logSuccess("Goal achieved!");
       logInfo("All golden states saved to Vector DB");
-      
+
       if (result.healedSteps > 0) {
         logHealing(`Self-healing worked! ${result.healedSteps} selectors recovered automatically`);
         logInfo("This demonstrates RAG-based healing in action!");
       }
-      
+
     } else {
       console.log("\n");
       console.log("╔═══════════════════════════════════════════════════════════════════════════╗");
@@ -307,7 +307,7 @@ async function runAmazonDemo() {
       console.log("║                                                                           ║");
       console.log("╚═══════════════════════════════════════════════════════════════════════════╝");
       console.log("\n");
-      
+
       logError(`Goal not achieved: ${result.error || "Unknown error"}`);
       logWarning("This might be due to:");
       logInfo("  • Amazon bot detection");
@@ -354,14 +354,14 @@ async function runHealingDemo() {
     // First run
     logStep("Run 1: Initial Run (Learning Phase)");
     const success1 = await runAmazonDemo();
-    
+
     if (!success1) {
       logError("First run failed - cannot demonstrate healing");
       return false;
     }
 
     logSuccess("First run complete - Golden states saved to Vector DB");
-    
+
     // Wait between runs
     logInfo("Waiting 5 seconds before second run...");
     await new Promise(resolve => setTimeout(resolve, 5000));
@@ -369,7 +369,7 @@ async function runHealingDemo() {
     // Second run
     logStep("Run 2: Second Run (Healing Phase)");
     logInfo("If Amazon changed any selectors, healing will activate!");
-    
+
     const success2 = await runAmazonDemo();
 
     if (success2) {

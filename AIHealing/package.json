@@ -1,6 +1,10 @@
 {
   "name": "aihealing",
   "type": "module",
+  "workspaces": [
+    ".wasp/out/*",
+    ".wasp/out/sdk/wasp"
+  ],
   "dependencies": {
     "@chroma-core/default-embed": "^0.1.9",
     "@google/generative-ai": "^0.24.1",
@@ -13,19 +17,20 @@
     "chromadb": "^3.3.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "dotenv": "^17.3.1",
+    "dotenv": "^16.6.1",
     "lucide-react": "^0.563.0",
     "puppeteer": "^24.36.1",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
     "react-hook-form": "^7.57.0",
-    "react-router-dom": "^6.26.2",
-    "tailwind-merge": "~2.6.0",
-    "wasp": "file:.wasp/out/sdk/wasp"
+    "react-router": "^7.12.0",
+    "react-router-dom": "^7.12.0",
+    "tailwind-merge": "~2.6.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.27.0",
-    "@types/react": "^18.0.37",
+    "@types/react": "^19.2.7",
+    "autoprefixer": "^10.5.0",
     "eslint": "^9.27.0",
     "eslint-config-prettier": "^10.1.5",
     "eslint-plugin-react": "^7.37.5",

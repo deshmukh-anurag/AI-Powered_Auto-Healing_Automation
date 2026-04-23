@@ -1,6 +1,6 @@
 app AIHealing {
   wasp: {
-    version: "^0.18.1"
+    version: "^0.21.1"
   },
   title: "AIHealing",
   head: [
@@ -68,6 +68,12 @@ page TasksPage {
   component: import { TasksPage } from "@src/tasks/TasksPage.tsx"
 }
 
+route TestSuiteDetailsRoute { path: "/test-suites/:id", to: TestSuiteDetailsPage }
+page TestSuiteDetailsPage {
+  authRequired: true,
+  component: import { TestSuitePage } from "@src/tasks/TestSuitePage.tsx"
+}
+
 // Queries - Read Operations
 query getTestSuites {
   fn: import { getTestSuites } from "@src/tasks/operations",
@@ -77,6 +83,11 @@ query getTestSuites {
 query getTestSuiteStats {
   fn: import { getTestSuiteStats } from "@src/tasks/operations",
   entities: [TestSuite]
+}
+
+query getExecutionLogs {
+  fn: import { getExecutionLogs } from "@src/tasks/operations",
+  entities: [ExecutionLog, TestSuite]
 }
 
 // Actions - Write Operations

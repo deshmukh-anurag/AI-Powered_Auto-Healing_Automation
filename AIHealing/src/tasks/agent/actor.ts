@@ -109,7 +109,16 @@ async function executeClick(
           };
         }
       } else {
-        await page.click(strategy.value);
+        try {
+          await page.click(strategy.value);
+        } catch (cssErr) {
+          // Fallback to JS click if Puppeteer physical mouse emulation fails (e.g. element overlapped or invisible)
+          await page.evaluate((sel) => {
+            const el = document.querySelector(sel) as HTMLElement;
+            if (el) el.click();
+            else throw new Error("Element not found in DOM during JS click");
+          }, strategy.value);
+        }
         return {
           success: true,
           selectorUsed: `${strategy.type}: ${strategy.value}`,

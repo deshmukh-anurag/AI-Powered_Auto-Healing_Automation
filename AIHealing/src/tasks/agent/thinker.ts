@@ -71,7 +71,13 @@ function buildPrompt(
   previousActions: Action[]
 ): string {
   // Simplify actionable elements for the prompt
-  const elementsDescription = snapshot.actionableElements
+  // Sort elements to ensure buttons and inputs are prioritized, then trim to ~120 elements to avoid Token limits
+  const maxElements = [...snapshot.actionableElements].sort((a, b) => {
+    const aPriority = (a.tagName.toLowerCase() === 'button' || a.tagName.toLowerCase() === 'input') ? 1 : 0;
+    const bPriority = (b.tagName.toLowerCase() === 'button' || b.tagName.toLowerCase() === 'input') ? 1 : 0;
+    return bPriority - aPriority;
+  }).slice(0, 120);
+  const elementsDescription = maxElements
     .map((el, idx) => {
       return `[${el.id}] ${el.tagName} - "${el.text}" (${Object.keys(el.selectors).length} selectors available)`;
     })
@@ -104,12 +110,13 @@ INSTRUCTIONS:
   "reasoning": "Explain your thinking",
   "nextAction": {
     "type": "click|type|select|wait|navigate|verify",
-    "targetElementId": "element-X (if applicable)",
+    "targetElementId": "element-X",
     "value": "text to type (if applicable)",
     "description": "Human-readable description of this action"
-  } OR null if goal is achieved,
+  },
   "confidence": 0.0-1.0
 }
+(Note: Set "nextAction" to null if goal is achieved)
 
 Think step by step. Be precise. Only suggest actions that are clearly achievable with the visible elements.`;
 }
@@ -125,7 +132,27 @@ async function callAIModel(
 
   try {
     if (config.model === "gemini-flash" || config.model === "gemini-pro") {
-      return await callGemini(prompt, config);
+      try {
+        const response = await callGemini(prompt, config);
+        // Validate that Gemini returned parseable JSON, otherwise trigger fallback
+        try {
+          const cleaned = response.trim().replace(/^```(json)?\n?|\n?```$/gi, "");
+          JSON.parse(cleaned);
+        } catch (parseErr) {
+          throw new Error("Gemini returned truncated or malformed JSON");
+        }
+        return response;
+      } catch (geminiError: any) {
+        console.warn("⚠️ Gemini failed or returned invalid JSON, falling back to Llama 3.3:", geminiError.message);
+        try {
+          // Tier 2 Fallback: Groq Llama 3.3
+          return await callFallbackAI(prompt, config, "llama-3.3-70b-versatile");
+        } catch (llamaError: any) {
+          console.warn("⚠️ Llama 3.3 failed, cascading down to Llama 3.1:", llamaError.message);
+          // Tier 3 Fallback: Groq Llama 3.1 
+          return await callFallbackAI(prompt, config, "llama-3.1-8b-instant");
+        }
+      }
     } else if (config.model === "gpt-4o") {
       throw new Error("GPT-4o is not free. Please use gemini-flash or gemini-pro for this university project.");
     } else {
@@ -133,20 +160,70 @@ async function callAIModel(
     }
   } catch (error) {
     console.error("❌ Thinker: AI model call failed:", error);
-    
+
     // Return a safe fallback response
-    const fallbackResponse = {
-      isGoalAchieved: false,
-      reasoning: `AI model call failed: ${error instanceof Error ? error.message : 'Unknown error'}. Falling back to safe navigation.`,
-      nextAction: {
-        type: "wait",
-        description: "Wait for manual intervention due to AI failure"
-      },
-      confidence: 0.1
-    };
-    
-    return JSON.stringify(fallbackResponse);
+  const fallbackResponse = {
+    isGoalAchieved: false,
+    reasoning: `AI model call failed: ${error instanceof Error ? error.message : 'Unknown error'}. Falling back to safe navigation.`,
+    nextAction: {
+      type: "wait",
+      description: "Wait for manual intervention due to AI failure"
+    },
+    confidence: 0.1
+  };
+
+  return JSON.stringify(fallbackResponse);
+}
+}
+
+/**
+ * Fallback to Groq or xAI (Grok) using OpenAI compatible fetching
+ */
+async function callFallbackAI(
+  prompt: string,
+  config: AIModelConfig,
+  specificModelName?: string
+): Promise<string> {
+  // Load variables specifically from process.env since script loaded `.env` using bash
+  const apiKey = process.env.GROQ_API_KEY || process.env.GROK_API_KEY;
+  if (!apiKey) {
+    throw new Error("No GROQ_API_KEY or GROK_API_KEY found in environment for fallback.");
   }
+
+  const isGroq = !!process.env.GROQ_API_KEY;
+  const baseUrl = isGroq ? "https://api.groq.com/openai/v1/chat/completions" : "https://api.x.ai/v1/chat/completions";
+  const modelName = specificModelName || (isGroq ? "llama-3.3-70b-versatile" : "grok-beta");
+
+  console.log(`🚀 Thinker (Fallback): Sending request to ${modelName} at ${baseUrl}...`);
+
+  const response = await fetch(baseUrl, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: modelName,
+      messages: [{ role: "user", content: prompt }],
+      temperature: config.temperature ?? 0.7,
+      max_tokens: config.maxTokens ?? 2048,
+      response_format: { type: "json_object" }
+    })
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Fallback API error: ${response.status} ${errText}`);
+  }
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content;
+  if (!text) {
+    throw new Error("Fallback API returned empty content.");
+  }
+
+  console.log(`✅ Thinker (Fallback): Received response (${text.length} chars)`);
+  return text;
 }
 
 /**
@@ -159,13 +236,13 @@ async function callGemini(
 ): Promise<string> {
   // Initialize Gemini client
   const genAI = new GoogleGenerativeAI(config.apiKey);
-  
+
   // Select the model
-  const modelName = config.model === "gemini-flash" 
+  const modelName = config.model === "gemini-flash"
     ? "gemini-2.5-flash"  // Fastest, most cost-effective
     : "gemini-2.5-pro";    // More capable
-  
-  const model = genAI.getGenerativeModel({ 
+
+  const model = genAI.getGenerativeModel({
     model: modelName,
     generationConfig: {
       temperature: config.temperature ?? 0.7,
@@ -175,14 +252,14 @@ async function callGemini(
   });
 
   console.log(`🚀 Thinker: Sending request to ${modelName}...`);
-  
+
   // Call the API
   const result = await model.generateContent(prompt);
   const response = result.response;
   const text = response.text();
-  
+
   console.log(`✅ Thinker: Received response (${text.length} chars)`);
-  
+
   return text;
 }
 
@@ -190,9 +267,17 @@ async function callGemini(
  * Parse the AI's JSON response
  */
 function parseAIResponse(response: string): ThinkingResult {
+  let cleaned = response.trim();
+  // Strip markdown formatting if present
+  if (cleaned.startsWith("```json")) {
+    cleaned = cleaned.replace(/^```json\n/, "").replace(/\n```$/, "");
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```\n/, "").replace(/\n```$/, "");
+  }
+
   try {
-    const parsed = JSON.parse(response);
-    
+    const parsed = JSON.parse(cleaned);
+
     return {
       nextAction: parsed.nextAction,
       reasoning: parsed.reasoning,
@@ -201,7 +286,8 @@ function parseAIResponse(response: string): ThinkingResult {
     };
   } catch (error) {
     console.error("Failed to parse AI response:", error);
-    
+    console.error("RAW RESPONSE WAS:", response);
+
     // Return a safe default
     return {
       nextAction: null,
