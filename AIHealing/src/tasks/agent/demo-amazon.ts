@@ -46,9 +46,9 @@ const DEMO_CONFIG = {
  */
 const AMAZON_TEST_SUITE = {
   id: "demo-amazon-macbook-001",
-  name: "agent creation testing",
-  goal: "enter the credentials E-mail as anuragdeshmukh61@gmail.com and password as Anurag@123 then from the sidebar scroll and go to the quicvoice dropbox and click agent .this will open the agent page and then create an agent in it",
-  startUrl: "http://localhost:3000/login", // or https://www.amazon.com
+  name: "Amazon MacBook Purchase Flow",
+  goal: "Search for a MacBook Pro M3, select the first result, and add it to the cart",
+  startUrl: "https://www.flipkart.com/", // or https://www.amazon.com
   maxSteps: 20,
   timeout: 10000, // Amazon can be slow
 };

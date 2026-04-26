@@ -159,7 +159,28 @@ export async function findPersistentSelector(
   try {
     const collection = await getCollection();
     
-    // Query for similar steps (semantic search)
+    // 1. Try exact ID lookup first (fastest and most accurate if description is stable)
+    const id = `${testSuiteId}_${stepDescription.replace(/\s+/g, "_")}`;
+    const exactMatch = await collection.get({ ids: [id] });
+    
+    if (exactMatch.ids.length > 0) {
+      const metadata = exactMatch.metadatas[0] as any;
+      console.log(`🔍 Found exact persistent selector for: ${stepDescription}`);
+      return {
+        selector: metadata.selector,
+        selectorType: metadata.selectorType,
+        confidence: 1.0,
+        metadata: {
+          tagName: metadata.tagName,
+          text: metadata.text,
+          role: metadata.role,
+          type: metadata.type,
+          placeholder: metadata.placeholder,
+        },
+      };
+    }
+
+    // 2. Query for similar steps (semantic search) if exact ID didn't match
     const results = await collection.query({
       queryEmbeddings: [embedding],
       nResults: 1,
@@ -179,7 +200,7 @@ export async function findPersistentSelector(
       if (confidence > 0.85) {
         const metadata = results.metadatas[0]?.[0] as any;
         
-        console.log(`🔍 Found persistent selector with ${(confidence * 100).toFixed(1)}% confidence`);
+        console.log(`🔍 Found similar persistent selector with ${(confidence * 100).toFixed(1)}% confidence`);
         
         return {
           selector: metadata.selector,
@@ -218,11 +239,16 @@ export async function updatePersistentSelector(
     const collection = await getCollection();
     const id = `${testSuiteId}_${stepDescription.replace(/\s+/g, "_")}`;
     
-    // Update the selector
+    // Fetch existing metadata to avoid losing fields
+    const existing = await collection.get({ ids: [id] });
+    const existingMetadata = existing.metadatas[0] || {};
+    
+    // Update the selector while preserving other metadata
     await collection.update({
       ids: [id],
       embeddings: [embedding],
       metadatas: [{
+        ...existingMetadata,
         selector: newSelector,
         selectorType,
         lastUsedAt: new Date().toISOString(),

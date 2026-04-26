@@ -247,7 +247,13 @@ export async function runAgentLoop(
         successful: false,
       };
 
-      if (!actionResult.success && targetElement) {
+      // Only attempt healing if the action failed due to a selector/element issue
+      // If it failed because of missing action.value (like in verify), healing won't help.
+      const isSelectorError = actionResult.error?.toLowerCase().includes("selector") || 
+                             actionResult.error?.toLowerCase().includes("element") ||
+                             actionResult.error?.toLowerCase().includes("found");
+
+      if (!actionResult.success && targetElement && isSelectorError) {
         console.log("🔧 Action failed, attempting self-healing...");
         healingAttempted = true;
 

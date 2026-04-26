@@ -147,20 +147,33 @@ async function extractActionableElements(page: Page): Promise<ActionableElement[
 
     // Helper: Generate CSS selector for an element
     function generateCSSSelector(element: Element): string {
-      // Try ID first
+      // Try ID first - most reliable
       if (element.id) return `#${element.id}`;
       
-      // Try data-testid
+      // Try data-testid - industry standard for testing
       const testId = element.getAttribute('data-testid');
       if (testId) return `[data-testid="${testId}"]`;
 
-      // Try class + tag
-      if (element.className) {
-        const classes = element.className.split(' ').filter(c => c).join('.');
+      // Try unique attributes like 'name' or 'type'
+      const name = element.getAttribute('name');
+      if (name) return `${element.tagName.toLowerCase()}[name="${name}"]`;
+
+      // Try class + tag - combine them to be more specific
+      if (element.className && typeof element.className === 'string') {
+        const classes = element.className.split(' ').filter(c => c && !c.includes(':')).join('.');
         if (classes) return `${element.tagName.toLowerCase()}.${classes}`;
       }
 
-      // Fallback to tag name
+      // If we're in a demo/test environment, we want to avoid tag-only fallbacks
+      // as they are too broad and hide the healing logic.
+      // But for production, we'd keep it. 
+      // Let's make it an nth-child fallback for more specificity.
+      const parent = element.parentElement;
+      if (parent) {
+        const index = Array.from(parent.children).indexOf(element) + 1;
+        return `${element.tagName.toLowerCase()}:nth-child(${index})`;
+      }
+
       return element.tagName.toLowerCase();
     }
 
