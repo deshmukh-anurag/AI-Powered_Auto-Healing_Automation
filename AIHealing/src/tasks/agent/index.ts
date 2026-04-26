@@ -197,8 +197,12 @@ export async function runAgentLoop(
         break;
       }
 
-      // === NEW RAG LOGIC START ===
-      // Check if we have a "Healed" version of this step from a previous run
+      // === RAG LOGIC ===
+      // Check if we have a "Healed" version of this step from a previous run.
+      // Three branches:
+      //   A) cached selector exists in current DOM    → use it (happy path)
+      //   B) cached selector exists but is BROKEN     → engage healer proactively
+      //   C) no cached selector                       → use whatever the LLM picked
       console.log("🔍 Checking Vector DB for persistent selector...");
       const actionEmbedding = await generateActionEmbedding(action, config.embeddingConfig);
       const knownSelector = await findPersistentSelector(
@@ -207,11 +211,19 @@ export async function runAgentLoop(
         actionEmbedding
       );
 
+      // Pre-declared so the healing block below can read these
+      let healingAttempted = false;
+      let healingSuccessful = false;
+      let healingDetails: StepLog["healing"] = {
+        attempted: false,
+        successful: false,
+      };
+      let proactiveHealApplied = false;
+
       if (knownSelector && knownSelector.confidence > 0.85) {
         console.log(`✅ Found persistent selector from previous run (${(knownSelector.confidence * 100).toFixed(1)}% confidence)`);
-        
-        // Find the element using the known good selector
-        const healedElement = snapshot.actionableElements.find(
+
+        const cachedSelectorMatch = snapshot.actionableElements.find(
           el => {
             if (knownSelector.selectorType === "css") {
               return el.selectors.css === knownSelector.selector;
@@ -226,26 +238,118 @@ export async function runAgentLoop(
           }
         );
 
-        if (healedElement) {
-          targetElement = healedElement;
-          action.targetElementId = healedElement.id;
+        if (cachedSelectorMatch) {
+          // BRANCH A: cached selector still works
+          targetElement = cachedSelectorMatch;
+          action.targetElementId = cachedSelectorMatch.id;
+        } else {
+          // BRANCH B: SELECTOR DRIFT — cached selector no longer in DOM.
+          // Build a virtual "broken" element from cached metadata and
+          // ask the healer for a replacement in the current DOM.
+          console.log(`💥 Cached selector "${knownSelector.selector}" no longer in DOM — engaging healer`);
+          healingAttempted = true;
+
+          const m = knownSelector.metadata;
+          const staleBrokenElement: typeof targetElement = {
+            ...targetElement,
+            tagName: m.tagName || targetElement.tagName,
+            text: m.text || targetElement.text,
+            attributes: {
+              ...(targetElement as any).attributes,
+              role: m.role,
+              type: m.type,
+              placeholder: m.placeholder,
+            } as any,
+            selectors: {
+              ...targetElement.selectors,
+              css: knownSelector.selectorType === "css" ? knownSelector.selector : targetElement.selectors.css,
+              xpath: knownSelector.selectorType === "xpath" ? knownSelector.selector : targetElement.selectors.xpath,
+            },
+          };
+
+          const healingResult = await healSelector(
+            action,
+            staleBrokenElement,
+            snapshot.actionableElements,
+            history,
+            config.testSuiteId,
+            config.embeddingConfig
+          );
+
+          if (healingResult.healed && healingResult.healedSelector) {
+            const replacement = snapshot.actionableElements.find(el => {
+              const t = healingResult.selectorType || "css";
+              if (t === "css") return el.selectors.css === healingResult.healedSelector;
+              if (t === "xpath") return el.selectors.xpath === healingResult.healedSelector;
+              if (t === "testId") return el.selectors.testId === healingResult.healedSelector;
+              return false;
+            });
+
+            if (replacement) {
+              console.log(`✅ Healed via ${healingResult.method}: ${knownSelector.selector} → ${healingResult.healedSelector} (${(healingResult.confidence * 100).toFixed(1)}%)`);
+              targetElement = replacement;
+              action.targetElementId = replacement.id;
+              healedSteps++;
+              healingSuccessful = true;
+              proactiveHealApplied = true;
+
+              const matchedOn = {
+                text: !!staleBrokenElement.text && staleBrokenElement.text === replacement.text,
+                role: !!(staleBrokenElement as any).attributes?.role &&
+                  (staleBrokenElement as any).attributes.role === (replacement as any).attributes?.role,
+                tag: staleBrokenElement.tagName === replacement.tagName,
+                attrs:
+                  (staleBrokenElement as any).attributes?.placeholder ===
+                    (replacement as any).attributes?.placeholder,
+              };
+
+              healingDetails = {
+                attempted: true,
+                successful: true,
+                oldSelector: knownSelector.selector,
+                newSelector: healingResult.healedSelector,
+                selectorType: healingResult.selectorType || "css",
+                confidence: healingResult.confidence,
+                method: healingResult.method,
+                matchedOn,
+              };
+
+              // Update vector DB with the healed selector for next run
+              try {
+                const elementEmbedding = await generateElementEmbedding(replacement, config.embeddingConfig);
+                await updatePersistentSelector(
+                  config.testSuiteId,
+                  action.description,
+                  healingResult.healedSelector,
+                  healingResult.selectorType || "css",
+                  elementEmbedding
+                );
+              } catch (e) {
+                console.warn("⚠️  Failed to update vector DB with healed selector:", e);
+              }
+            }
+          }
+
+          if (!healingSuccessful) {
+            console.log("❌ Proactive healing failed — falling back to LLM target");
+            healingDetails = {
+              attempted: true,
+              successful: false,
+              oldSelector: knownSelector.selector,
+              confidence: 0,
+              method: "failed",
+            };
+          }
         }
       }
-      // === NEW RAG LOGIC END ===
+      // === RAG LOGIC END ===
 
       // 3. ACT: Execute the action
       let actionResult = await act(action, page, snapshot.actionableElements);
 
-      // 4. HEAL: If action failed, try to heal the selector
-      let healingAttempted = false;
-      let healingSuccessful = false;
+      // 4. HEAL: If action failed (and we didn't already heal proactively), try to heal the selector
       let selectorUsed = targetElement.selectors.css || targetElement.selectors.xpath || "";
       let selectorType: "css" | "xpath" | "testId" | "aria" = "css";
-      // Capture rich healing details for logging + DB persistence
-      let healingDetails: StepLog["healing"] = {
-        attempted: false,
-        successful: false,
-      };
 
       // Only attempt healing if the action failed due to a selector/element issue
       // If it failed because of missing action.value (like in verify), healing won't help.

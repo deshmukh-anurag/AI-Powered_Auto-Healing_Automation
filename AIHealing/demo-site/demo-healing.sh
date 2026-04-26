@@ -93,6 +93,7 @@ echo ""
 cd "${REPO_ROOT}"
 HEALING_DEMO_URL="${DEMO_URL}" \
 HEALING_DEMO_SUITE_ID="demo-healing-run-1" \
+HEALING_DEMO_CLEAR=1 \
   npx tsx "${SCRIPT_DIR}/run-demo.ts" \
     "${DEMO_URL}" \
     "Search for 'headphones' and click Add to Cart on the first result." \

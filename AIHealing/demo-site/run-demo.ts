@@ -15,8 +15,10 @@
 import "dotenv/config";
 import puppeteer from "puppeteer";
 import { runAgentLoop, type AgentConfig } from "../src/tasks/agent/index";
+import { clearGoldenStates } from "../src/tasks/agent/vectorDB";
 
 const [, , startUrlArg, goalArg] = process.argv;
+const SHOULD_CLEAR = process.env.HEALING_DEMO_CLEAR === "1";
 
 if (!startUrlArg || !goalArg) {
   console.error("Usage: npx tsx demo-site/run-demo.ts <startUrl> \"<goal>\"");
@@ -32,6 +34,16 @@ if (!GEMINI_KEY) {
 }
 
 async function main() {
+  if (SHOULD_CLEAR) {
+    console.log(`🧹 Clearing vector DB for suite "${SUITE_ID}" (fresh learning run)...`);
+    try {
+      await clearGoldenStates(SUITE_ID);
+      console.log(`✅ Vector DB cleared`);
+    } catch (e) {
+      console.warn(`⚠️  Could not clear vector DB:`, e);
+    }
+  }
+
   console.log(`🌐 Launching browser...`);
   const browser = await puppeteer.launch({
     headless: false,
@@ -45,9 +57,10 @@ async function main() {
     await page.goto(startUrlArg, { waitUntil: "domcontentloaded" });
 
     const config: AgentConfig = {
-      goal: goalArg,
+      // Make goal completion explicit so the LLM marks done after clicking
+      goal: `${goalArg} The goal is achieved as soon as the Add to Cart button has been clicked. Do NOT verify or check anything afterwards.`,
       startUrl: startUrlArg,
-      maxSteps: 12,
+      maxSteps: 4,
       timeout: 8000,
       aiModel: {
         model: "gemini-flash" as any,
