@@ -95,6 +95,11 @@ query getTestSuite {
   entities: [TestSuite]
 }
 
+query getHealingEvents {
+  fn: import { getHealingEvents } from "@src/tasks/operations",
+  entities: [HealingEvent, Step, TestSuite]
+}
+
 // Actions - Write Operations
 action createTestSuite {
   fn: import { createTestSuite } from "@src/tasks/operations",
@@ -103,7 +108,7 @@ action createTestSuite {
 
 action runTestSuite {
   fn: import { runTestSuite } from "@src/tasks/operations",
-  entities: [TestSuite, Step, ExecutionLog]
+  entities: [TestSuite, Step, ExecutionLog, HealingEvent]
 }
 
 action stopTestSuite {

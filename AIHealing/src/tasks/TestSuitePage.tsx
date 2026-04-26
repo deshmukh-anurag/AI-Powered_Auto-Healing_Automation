@@ -4,6 +4,7 @@ import { useQuery, useAction } from "wasp/client/operations";
 import {
   getExecutionLogs,
   getTestSuite,
+  getHealingEvents,
   runTestSuite,
   stopTestSuite,
 } from "wasp/client/operations";
@@ -48,6 +49,8 @@ export function TestSuitePage() {
   const { data: suite, refetch: refetchSuite } = useQuery(getTestSuite, { testSuiteId: id! });
   const { data: logs, isLoading, refetch: refetchLogs } =
     useQuery(getExecutionLogs, { testSuiteId: id! });
+  const { data: healingEvents, refetch: refetchHealing } =
+    useQuery(getHealingEvents, { testSuiteId: id! });
 
   const runAction = useAction(runTestSuite);
   const stopAction = useAction(stopTestSuite);
@@ -63,9 +66,10 @@ export function TestSuitePage() {
     const interval = setInterval(() => {
       refetchLogs();
       refetchSuite();
+      refetchHealing();
     }, suite?.status === "RUNNING" ? 1000 : 3000);
     return () => clearInterval(interval);
-  }, [refetchLogs, refetchSuite, suite?.status]);
+  }, [refetchLogs, refetchSuite, refetchHealing, suite?.status]);
 
   // Auto-scroll to bottom when logs arrive (if user hasn't disabled it)
   useEffect(() => {
@@ -232,6 +236,13 @@ export function TestSuitePage() {
             <MissionStat icon={<Wrench className="h-3.5 w-3.5" />} label="Healed" value={suite.healedSteps.toString()} tint="blue" />
             <MissionStat icon={<DollarSign className="h-3.5 w-3.5" />} label="Cost" value={`$${(suite.estimatedCost || 0).toFixed(3)}`} tint="amber" />
           </div>
+        </section>
+      )}
+
+      {/* Healing Events panel — the "money shot" for presentations */}
+      {healingEvents && healingEvents.length > 0 && (
+        <section className="container mx-auto px-4 pt-4">
+          <HealingEventsPanel events={healingEvents} />
         </section>
       )}
 
@@ -490,6 +501,150 @@ function MissionStat({
       </div>
       <div className={cn("text-lg font-bold mt-0.5 tabular-nums", color)}>
         {value}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Healing Events Panel — the visual proof for presentations
+// ---------------------------------------------------------------------------
+
+type HealingEvent = {
+  id: string;
+  stepNumber: number;
+  stepDescription: string;
+  action: string;
+  oldSelector: string;
+  newSelector: string;
+  confidence: number;
+  strategy: string;
+  wasSuccessful: boolean;
+  matchedOn: any;
+  timestamp: string | Date;
+};
+
+function HealingEventsPanel({ events }: { events: HealingEvent[] }) {
+  const successCount = events.filter((e) => e.wasSuccessful).length;
+  const avgConfidence =
+    events.reduce((sum, e) => sum + (e.confidence || 0), 0) / Math.max(events.length, 1);
+
+  return (
+    <Card className="bg-gradient-to-br from-blue-950/40 to-purple-950/40 border-blue-500/30 overflow-hidden">
+      <CardHeader className="py-3 px-4 border-b border-blue-500/20 flex flex-row items-center justify-between space-y-0">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-purple-500 shadow-lg shadow-blue-500/30">
+            <Wrench className="h-4 w-4 text-white" />
+          </div>
+          <div>
+            <CardTitle className="text-base text-white">Healing Events</CardTitle>
+            <p className="text-xs text-blue-200/70">
+              {successCount} of {events.length} healed · avg confidence{" "}
+              {(avgConfidence * 100).toFixed(0)}%
+            </p>
+          </div>
+        </div>
+        <Badge
+          variant="outline"
+          className="bg-blue-500/15 border-blue-400/40 text-blue-200 font-mono text-[11px] uppercase tracking-wider"
+        >
+          🌟 RAG-driven
+        </Badge>
+      </CardHeader>
+
+      <CardContent className="p-0 max-h-[280px] overflow-y-auto">
+        <div className="divide-y divide-blue-500/10">
+          {events.map((ev) => (
+            <HealingEventRow key={ev.id} event={ev} />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function HealingEventRow({ event }: { event: HealingEvent }) {
+  const matched = event.matchedOn || {};
+  const matchedKeys = Object.keys(matched).filter((k) => matched[k]);
+  const confidencePct = Math.round((event.confidence || 0) * 100);
+  const strategyLabel: Record<string, string> = {
+    RAG_VECTOR: "Vector DB",
+    TEXT_SIMILARITY: "Text similarity",
+    STRUCTURAL: "Structural match",
+    EXACT_TEXT: "Exact text",
+    MANUAL_OVERRIDE: "Manual",
+  };
+
+  return (
+    <div className="px-4 py-3 hover:bg-blue-500/5 transition-colors">
+      <div className="flex items-start gap-3">
+        <div
+          className={cn(
+            "flex h-6 w-6 items-center justify-center rounded-full flex-none mt-0.5 text-[10px] font-bold",
+            event.wasSuccessful
+              ? "bg-green-500/20 text-green-300 border border-green-400/40"
+              : "bg-red-500/20 text-red-300 border border-red-400/40"
+          )}
+        >
+          {event.wasSuccessful ? "✓" : "✗"}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-mono text-blue-200/60 uppercase">
+              Step {event.stepNumber}
+            </span>
+            <span className="text-xs text-gray-200 truncate">
+              {event.stepDescription}
+            </span>
+            <Badge
+              variant="outline"
+              className="bg-purple-500/15 border-purple-400/40 text-purple-200 font-mono text-[10px] uppercase tracking-wider ml-auto flex-none"
+            >
+              {strategyLabel[event.strategy] || event.strategy}
+            </Badge>
+          </div>
+
+          <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs font-mono">
+            <div className="flex items-start gap-2 min-w-0">
+              <span className="text-red-400 flex-none">old:</span>
+              <code className="text-red-200 line-through break-all">
+                {event.oldSelector || "—"}
+              </code>
+            </div>
+            <div className="flex items-start gap-2 min-w-0">
+              <span className="text-green-400 flex-none">new:</span>
+              <code className="text-green-200 break-all">
+                {event.newSelector || "—"}
+              </code>
+            </div>
+          </div>
+
+          <div className="mt-2 flex items-center gap-3 text-[11px] text-gray-400 flex-wrap">
+            <span className="flex items-center gap-1">
+              <span className="text-gray-500">confidence</span>
+              <span
+                className={cn(
+                  "font-mono font-bold",
+                  confidencePct >= 90
+                    ? "text-green-300"
+                    : confidencePct >= 70
+                      ? "text-yellow-300"
+                      : "text-orange-300"
+                )}
+              >
+                {confidencePct}%
+              </span>
+            </span>
+            {matchedKeys.length > 0 && (
+              <span className="flex items-center gap-1">
+                <span className="text-gray-500">matched on</span>
+                <span className="font-mono text-blue-200">
+                  {matchedKeys.join(" + ")}
+                </span>
+              </span>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

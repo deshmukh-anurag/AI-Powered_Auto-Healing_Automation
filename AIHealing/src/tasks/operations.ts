@@ -14,6 +14,7 @@ import type {
   GetTestSuiteStats,
   GetExecutionLogs,
   GetTestSuite,
+  GetHealingEvents,
   CreateTestSuite,
   RunTestSuite,
   StopTestSuite,
@@ -176,6 +177,73 @@ export const getTestSuite: GetTestSuite<{ testSuiteId: string }, TestSuite> = as
   }
 
   return testSuite;
+};
+
+/**
+ * Get healing events for a specific test suite, joined with their step.
+ *
+ * Returns a flat shape that the UI can render directly:
+ *   [{ id, stepNumber, stepDescription, oldSelector, newSelector,
+ *      confidence, strategy, wasSuccessful, matchedOn, timestamp }]
+ */
+type HealingEventRow = {
+  id: string;
+  stepNumber: number;
+  stepDescription: string;
+  action: string;
+  oldSelector: string;
+  newSelector: string;
+  confidence: number;
+  strategy: string;
+  wasSuccessful: boolean;
+  matchedOn: any;
+  timestamp: Date;
+};
+
+export const getHealingEvents: GetHealingEvents<{ testSuiteId: string }, HealingEventRow[]> = async (
+  args,
+  context
+) => {
+  if (!context.user) {
+    throw new HttpError(401, "Unauthorized - Please log in");
+  }
+
+  const testSuite = await context.entities.TestSuite.findUnique({
+    where: { id: args.testSuiteId },
+  });
+  if (!testSuite || testSuite.userId !== context.user.id) {
+    throw new HttpError(403, "Forbidden or not found");
+  }
+
+  // Fetch all steps belonging to this suite, with their healing events
+  const steps = await context.entities.Step.findMany({
+    where: { testSuiteId: args.testSuiteId },
+    include: { healingEvents: true },
+    orderBy: { stepNumber: "asc" },
+  });
+
+  const rows: HealingEventRow[] = [];
+  for (const step of steps) {
+    const description =
+      ((step.goldenState as any)?.description as string | undefined) ?? step.action;
+    for (const ev of step.healingEvents) {
+      rows.push({
+        id: ev.id,
+        stepNumber: step.stepNumber,
+        stepDescription: description,
+        action: step.action,
+        oldSelector: ev.oldSelector,
+        newSelector: ev.newSelector,
+        confidence: ev.confidence,
+        strategy: ev.strategy,
+        wasSuccessful: ev.wasSuccessful,
+        matchedOn: ev.matchedOn,
+        timestamp: ev.timestamp,
+      });
+    }
+  }
+
+  return rows;
 };
 
 /**
@@ -382,6 +450,72 @@ export const runTestSuite: RunTestSuite<{ testSuiteId: string }, TestSuite> = as
         estimatedCost: result.totalCost
       }
     });
+
+    // Persist Step + HealingEvent rows so the UI can show the healing trail.
+    // We create one Step per StepLog that the agent emitted (skip the
+    // goal-achieved sentinel which has no action), then attach a HealingEvent
+    // for any step where healing was attempted.
+    for (const log of result.logs) {
+      if (!log.action) continue; // skip "goal achieved" / "no action" markers
+
+      let stepRow;
+      try {
+        stepRow = await context.entities.Step.create({
+          data: {
+            testSuiteId: testSuite.id,
+            stepNumber: log.stepNumber,
+            action: log.action.type?.toUpperCase?.() || "ACTION",
+            selector: log.selectorUsed || log.healing.oldSelector || "",
+            value: (log.action as any).value || null,
+            goldenState: { description: log.action.description, selectorType: log.selectorType ?? null } as any,
+            status: log.healing.successful
+              ? "HEALED"
+              : log.result?.success
+                ? "SUCCESS"
+                : log.result
+                  ? "FAILED"
+                  : "PENDING",
+            confidence: log.healing.confidence ?? 1.0,
+            reasoning: log.reasoning?.slice(0, 500),
+            errorMessage: log.result && !log.result.success ? (log.result as any).error || null : null,
+            executionTime: (log.result as any)?.executionTimeMs ?? null,
+          },
+        });
+      } catch (stepErr) {
+        console.warn("Failed to persist Step row", stepErr);
+        continue;
+      }
+
+      if (log.healing.attempted && log.healing.oldSelector) {
+        try {
+          const strategy =
+            log.healing.method === "vector-db"
+              ? "RAG_VECTOR"
+              : log.healing.method === "text-similarity"
+                ? "TEXT_SIMILARITY"
+                : log.healing.method === "structural-similarity"
+                  ? "STRUCTURAL"
+                  : log.healing.method === "exact-match"
+                    ? "EXACT_TEXT"
+                    : "MANUAL_OVERRIDE";
+
+          await context.entities.HealingEvent.create({
+            data: {
+              stepId: stepRow.id,
+              oldSelector: log.healing.oldSelector,
+              newSelector: log.healing.newSelector || log.healing.oldSelector,
+              confidence: log.healing.confidence ?? 0,
+              matchedOn: (log.healing.matchedOn || {}) as any,
+              strategy,
+              wasSuccessful: log.healing.successful,
+              requiresManualReview: !log.healing.successful,
+            },
+          });
+        } catch (heErr) {
+          console.warn("Failed to persist HealingEvent row", heErr);
+        }
+      }
+    }
 
   } catch (error: any) {
     console.error("Agent Loop Error: ", error);

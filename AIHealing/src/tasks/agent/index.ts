@@ -59,6 +59,14 @@ export interface StepLog {
   healing: {
     attempted: boolean;
     successful: boolean;
+    // Rich healing detail — populated when the healer engages so that
+    // the UI can display "old → new selector | confidence | method".
+    oldSelector?: string;
+    newSelector?: string;
+    selectorType?: "css" | "xpath" | "testId" | "aria";
+    confidence?: number;
+    method?: "vector-db" | "exact-match" | "text-similarity" | "structural-similarity" | "failed";
+    matchedOn?: { text?: boolean; role?: boolean; tag?: boolean; attrs?: boolean };
   };
   reasoning: string;
   timestamp: Date;
@@ -233,6 +241,11 @@ export async function runAgentLoop(
       let healingSuccessful = false;
       let selectorUsed = targetElement.selectors.css || targetElement.selectors.xpath || "";
       let selectorType: "css" | "xpath" | "testId" | "aria" = "css";
+      // Capture rich healing details for logging + DB persistence
+      let healingDetails: StepLog["healing"] = {
+        attempted: false,
+        successful: false,
+      };
 
       if (!actionResult.success && targetElement) {
         console.log("🔧 Action failed, attempting self-healing...");
@@ -249,7 +262,7 @@ export async function runAgentLoop(
 
         if (healingResult.healed && healingResult.healedSelector) {
           console.log(`✅ Selector healed via ${healingResult.method}! Confidence: ${healingResult.confidence}`);
-          
+
           // Retry the action with healed selector
           const healedElement = snapshot.actionableElements.find(
             el => {
@@ -271,6 +284,30 @@ export async function runAgentLoop(
               healedSteps++;
               healingSuccessful = true;
               recordSuccess(action, healedElement);
+
+              // Record what matched between broken element and healed element
+              const matchedOn = {
+                text: !!targetElement.text && targetElement.text === healedElement.text,
+                role: !!(targetElement as any).attributes?.role &&
+                  (targetElement as any).attributes.role === (healedElement as any).attributes?.role,
+                tag: targetElement.tagName === healedElement.tagName,
+                attrs:
+                  (targetElement as any).attributes?.placeholder ===
+                    (healedElement as any).attributes?.placeholder ||
+                  (targetElement as any).attributes?.name ===
+                    (healedElement as any).attributes?.name,
+              };
+
+              healingDetails = {
+                attempted: true,
+                successful: true,
+                oldSelector: healingResult.originalSelector,
+                newSelector: healingResult.healedSelector,
+                selectorType: healingResult.selectorType || "css",
+                confidence: healingResult.confidence,
+                method: healingResult.method,
+                matchedOn,
+              };
               
               // === UPDATE VECTOR DB with the healed selector ===
               if (healingResult.method === "text-similarity" || healingResult.method === "structural-similarity") {
@@ -295,6 +332,14 @@ export async function runAgentLoop(
           if (targetElement) {
             recordFailure(action, targetElement);
           }
+          // Failed healing — still record the attempt so the UI can surface it
+          healingDetails = {
+            attempted: true,
+            successful: false,
+            oldSelector: targetElement.selectors.css || targetElement.selectors.xpath || "",
+            confidence: 0,
+            method: "failed",
+          };
         }
       } else if (actionResult.success && targetElement) {
         // === SUCCESS: Save this to the Vector DB as the "Golden State" ===
@@ -328,10 +373,9 @@ export async function runAgentLoop(
         stepNumber: step,
         action,
         result: actionResult,
-        healing: {
-          attempted: healingAttempted,
-          successful: healingSuccessful,
-        },
+        healing: healingAttempted
+          ? healingDetails
+          : { attempted: false, successful: false },
         reasoning: thinkingResult.reasoning,
         timestamp: new Date(),
         selectorUsed: actionResult.success ? selectorUsed : undefined,
