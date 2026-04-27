@@ -236,10 +236,19 @@ export async function findPersistentSelector(
 
       const confidence = 1 - distance; // L2 distance → similarity (0-1)
 
-      // Permissive threshold — Llama vs Gemini can phrase the same action
-      // very differently between runs, so we accept anything above ~30%.
-      // Demo correctness > production strictness here.
-      const THRESHOLD = 0.3;
+      // STRICT threshold (0.92) — only accept near-identical descriptors.
+      //
+      // Why so high? Different action types like "Type X into search field" vs
+      // "Click Y button" share enough grammatical structure that embeddings
+      // give them ~0.7-0.85 cosine similarity even though they refer to
+      // DIFFERENT steps. With a low threshold, step 2 of a run was getting
+      // matched to step 1's cached entry, returning the wrong selector.
+      //
+      // We rely on the exact-ID lookup (above) for stable descriptor matching
+      // across runs — the planner uses temperature 0.2 and a deterministic
+      // fallback chain, so descriptors are reproducible. Semantic search is
+      // only the safety net for slight rewording, which should still be ≥0.92.
+      const THRESHOLD = 0.92;
       console.log(`🔍 Vector DB: nearest neighbour confidence ${(confidence * 100).toFixed(1)}% (threshold ${THRESHOLD * 100}%)`);
 
       if (confidence > THRESHOLD) {
