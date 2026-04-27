@@ -1,28 +1,24 @@
 // ============================================================================
-// AGENT LOOP - Main Orchestrator with True RAG
+// LEGACY AGENT LOOP — DEPRECATED 2026-04-27
 // ============================================================================
-// This module orchestrates the Observe → Think → Act loop with:
-// 1. Vector Database lookup BEFORE each action (persistent memory)
-// 2. Golden State saving AFTER successful actions
-// 3. RAG healing on failures with DB updates
-// 4. Final script generation
+// This was the original per-step Observe → Think → Act loop with a 4-strategy
+// classical healer (Vector DB → exact text → similar text → structural).
+//
+// SUPERSEDED BY: src/tasks/agent/planExecute.ts (Plan-then-Execute architecture)
+//   - Single Planner LLM call upfront → stable descriptors per step
+//   - RAG cache lookup by descriptor embedding (vectorDB.ts)
+//   - LLM-based healing (healer.ts → llmHeal) when cached selector drifts
+//
+// The function body below is preserved as a /* */ block comment for reference.
+// All callers (operations.ts, demo-amazon.ts, demo-site/run-demo.ts) have been
+// migrated to runPlanExecuteAgent.
 // ============================================================================
 
-import type { Page } from "puppeteer";
-import { captureSnapshot, waitForPageStable } from "./observer";
-import { think, type AIModelConfig, type Action } from "./thinker";
-import { act, type ActionResult } from "./actor";
-import { healSelector, recordSuccess, recordFailure, type SelectorHistory } from "./healer";
-import { 
-  saveGoldenState, 
-  findPersistentSelector, 
-  updatePersistentSelector 
-} from "./vectorDB";
-import { 
-  generateElementEmbedding, 
-  generateActionEmbedding,
-  type EmbeddingConfig 
-} from "./embeddings";
+// Type-only imports kept so the AgentConfig / AgentResult / StepLog interfaces
+// (still consumed by planExecute.ts and demo-amazon.ts) continue to resolve.
+import type { AIModelConfig, Action } from "./thinker";
+import type { ActionResult } from "./actor";
+import type { EmbeddingConfig } from "./embeddings";
 
 // ============================================================================
 // TYPES
@@ -78,9 +74,11 @@ export interface StepLog {
 // MAIN AGENT LOOP
 // ============================================================================
 
-/**
- * Execute the full Observe → Think → Act loop
- */
+/* DEPRECATED — preserved as reference. See header at top of file.
+   Opens a block comment that closes with the matching * / after the
+   function's final closing brace. The JSDoc that lived here was removed
+   so it doesn't terminate this comment block.
+
 export async function runAgentLoop(
   page: Page,
   config: AgentConfig
@@ -534,3 +532,5 @@ export async function runAgentLoop(
     };
   }
 }
+
+end of legacy runAgentLoop — block comment terminator follows */

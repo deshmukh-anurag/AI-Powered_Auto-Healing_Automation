@@ -14,16 +14,11 @@
 
 import "dotenv/config";
 import puppeteer from "puppeteer";
-import { runAgentLoop, type AgentConfig } from "../src/tasks/agent/index";
 import { runPlanExecuteAgent, type PlanExecuteConfig } from "../src/tasks/agent/planExecute";
 import { clearGoldenStates } from "../src/tasks/agent/vectorDB";
 
 const [, , startUrlArg, goalArg] = process.argv;
 const SHOULD_CLEAR = process.env.HEALING_DEMO_CLEAR === "1";
-
-// Set HEALING_DEMO_AGENT=legacy to use the old per-step Thinker loop.
-// Default is the new Plan-then-Execute agent.
-const USE_LEGACY = process.env.HEALING_DEMO_AGENT === "legacy";
 
 if (!startUrlArg || !goalArg) {
   console.error("Usage: npx tsx demo-site/run-demo.ts <startUrl> \"<goal>\"");
@@ -78,14 +73,8 @@ async function main() {
       },
     };
 
-    let result;
-    if (USE_LEGACY) {
-      console.log("▶️  Running LEGACY per-step agent loop...");
-      result = await runAgentLoop(page, sharedConfig as AgentConfig);
-    } else {
-      console.log("▶️  Running PLAN-EXECUTE agent (single planner call + per-step healing)...");
-      result = await runPlanExecuteAgent(page, sharedConfig as PlanExecuteConfig);
-    }
+    console.log("▶️  Running PLAN-EXECUTE agent (single planner call + per-step healing)...");
+    const result = await runPlanExecuteAgent(page, sharedConfig as PlanExecuteConfig);
 
     console.log("");
     console.log("─────────────────────────────────────────────");

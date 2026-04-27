@@ -6,10 +6,11 @@
 // ============================================================================
 
 import "dotenv/config";
-import { runAgentLoop } from "./index";
+// MIGRATED: now using the Plan-then-Execute agent.
+// Old loop preserved (commented) in agent/index.ts for reference.
+import { runPlanExecuteAgent, type PlanExecuteConfig } from "./planExecute";
 import { clearGoldenStates } from "./vectorDB";
 import puppeteer, { type Browser, type Page } from "puppeteer";
-import type { AgentConfig } from "./index";
 
 // ============================================================================
 // DEMO CONFIGURATION
@@ -197,7 +198,7 @@ async function runAmazonDemo() {
 
     // Configure agent
     logStep("Phase 5: Agent Configuration");
-    const config: AgentConfig = {
+    const config: PlanExecuteConfig = {
       goal: AMAZON_TEST_SUITE.goal,
       startUrl: AMAZON_TEST_SUITE.startUrl,
       maxSteps: AMAZON_TEST_SUITE.maxSteps,
@@ -207,7 +208,7 @@ async function runAmazonDemo() {
       embeddingConfig: DEMO_CONFIG.embeddingConfig,
     };
 
-    logInfo("Agent configured with:");
+    logInfo("Agent configured with (Plan-then-Execute):");
     logInfo(`  • AI Model: ${config.aiModel.model}`);
     logInfo(`  • Max Steps: ${config.maxSteps}`);
     logInfo(`  • Timeout: ${config.timeout}ms per action`);
@@ -218,7 +219,7 @@ async function runAmazonDemo() {
     console.log("\n⏱️  Starting autonomous execution...\n");
 
     const startTime = Date.now();
-    const result = await runAgentLoop(page, config);
+    const result = await runPlanExecuteAgent(page, config);
     const duration = Date.now() - startTime;
 
     // Display results

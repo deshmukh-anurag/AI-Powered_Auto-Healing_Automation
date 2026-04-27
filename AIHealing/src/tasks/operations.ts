@@ -22,7 +22,9 @@ import type {
 import { HttpError } from "wasp/server";
 import puppeteer from "puppeteer";
 import type { Browser } from "puppeteer";
-import { runAgentLoop } from "./agent/index";
+// MIGRATED: the Wasp action now uses the Plan-then-Execute agent.
+// The legacy `runAgentLoop` is preserved (commented out) in agent/index.ts.
+import { runPlanExecuteAgent } from "./agent/planExecute";
 import { generateFinalScript } from "./agent/generator";
 
 // ============================================================================
@@ -396,8 +398,9 @@ export const runTestSuite: RunTestSuite<{ testSuiteId: string }, TestSuite> = as
   let script = "";
 
   try {
-    // Execute agent
-    result = await runAgentLoop(page, {
+    // Execute agent — Plan-then-Execute architecture
+    // (Planner LLM → stable descriptors → RAG cache lookup → LLM healing on drift)
+    result = await runPlanExecuteAgent(page, {
       goal: testSuite.goal,
       startUrl: testSuite.startUrl,
       maxSteps: 50,
@@ -408,7 +411,7 @@ export const runTestSuite: RunTestSuite<{ testSuiteId: string }, TestSuite> = as
       },
       testSuiteId: testSuite.id,
       embeddingConfig: {
-        provider: "gemini", // Let's default to gemini as stated in amazon demo
+        provider: "gemini",
         apiKey: process.env.GEMINI_API_KEY || ""
       },
       shouldCancel: () => shouldCancel(testSuite.id)
