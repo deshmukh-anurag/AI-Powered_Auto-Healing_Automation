@@ -49,6 +49,30 @@ bold "╚═══════════════════════�
 bold ""
 
 hr
+cyan "Phase 0/5 — Pre-flight checks"
+hr
+
+# Check ChromaDB — without it, Run 1 saves nothing → Run 2 has nothing to heal
+CHROMA_URL="${CHROMA_URL:-http://localhost:8000}"
+if curl -fsS "${CHROMA_URL}/api/v1/heartbeat" >/dev/null 2>&1; then
+  green "✅ ChromaDB up at ${CHROMA_URL}"
+elif curl -fsS "${CHROMA_URL}/api/v2/heartbeat" >/dev/null 2>&1; then
+  green "✅ ChromaDB (v2 API) up at ${CHROMA_URL}"
+else
+  red "❌ ChromaDB is NOT running at ${CHROMA_URL}"
+  red ""
+  red "  Without ChromaDB, golden states cannot be saved → Run 2 cannot heal"
+  red "  anything because there is no memory of Run 1's selectors."
+  red ""
+  red "  Start it with:"
+  yellow "    docker run -d -p 8000:8000 chromadb/chroma"
+  red ""
+  red "  …or restart an existing container:"
+  yellow "    docker start \$(docker ps -a --filter ancestor=chromadb/chroma -q | head -1)"
+  exit 1
+fi
+
+hr
 cyan "Phase 1/5 — Starting demo site"
 hr
 

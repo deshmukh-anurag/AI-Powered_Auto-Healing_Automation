@@ -154,75 +154,96 @@ export async function runPlanExecuteAgent(
 
       let healing: StepLog["healing"] = { attempted: false, successful: false };
       let cachedSelectorBroken = false;
+      let firstTimeDiscovery = false;
 
       if (cached && !targetElement) {
         // Branch B-i: cached selector exists but doesn't match the live DOM
-        console.log(`💥 Cached selector "${cached.selector}" not found in current DOM — engaging LLM healer`);
+        // → this is a TRUE healing event (drift detected)
+        console.log(`💥 Cached selector "${cached.selector}" not found in current DOM`);
+        console.log(`🔧 HEALER: invoking LLM to recover selector for "${planStep.descriptor}"`);
         cachedSelectorBroken = true;
       } else if (!cached) {
         // Branch B-ii: first time we see this descriptor
-        console.log("🆕 No cached selector for this descriptor — engaging LLM healer");
+        // → this is NOT healing. The Thinker is just deciding fresh.
+        console.log(`🧠 THINKER: no cached selector for "${planStep.descriptor}", deciding fresh`);
+        firstTimeDiscovery = true;
       } else {
-        // Branch A
-        console.log(`✅ Cache hit (and selector still valid in DOM): ${cached.selector}`);
+        // Branch A: cache hit and selector still valid
+        console.log(`✅ Cache hit (selector still valid in DOM): ${cached.selector}`);
       }
 
       // -------------------------------------------------------------------
-      // 3c. Healing (Branch B): LLM picks a matching element
+      // 3c. LLM call — same underlying capability, two different roles:
+      //     - Thinker: picks element on first encounter (just learning)
+      //     - Healer:  picks element AFTER drift (this is healing)
       // -------------------------------------------------------------------
       if (!targetElement) {
-        const healResult = await llmHeal(
+        const llmResult = await llmHeal(
           planStep.descriptor,
           planStep.expectedAction,
           snapshot.actionableElements,
           config.aiModel
         );
 
-        if (healResult.healed && healResult.elementId) {
-          const matched = snapshot.actionableElements.find((el) => el.id === healResult.elementId);
+        if (llmResult.healed && llmResult.elementId) {
+          const matched = snapshot.actionableElements.find((el) => el.id === llmResult.elementId);
           if (matched) {
             targetElement = matched;
 
-            const oldSelector = cached?.selector ?? "";
-            const newSelector =
-              matched.selectors.css || matched.selectors.xpath || matched.selectors.testId || "";
-
-            const matchedOn = {
-              text: !!cached?.metadata?.text && cached.metadata.text === matched.text,
-              role:
-                !!cached?.metadata?.role &&
-                cached.metadata.role === (matched.attributes?.role as string | undefined),
-              tag: !!cached?.metadata?.tagName && cached.metadata.tagName === matched.tagName,
-              attrs:
-                !!cached?.metadata?.placeholder &&
-                cached.metadata.placeholder === (matched.attributes?.placeholder as string | undefined),
-            };
-
-            healing = {
-              attempted: true,
-              successful: true,
-              oldSelector,
-              newSelector,
-              selectorType: "css",
-              confidence: healResult.confidence,
-              method: "vector-db", // signals "LLM-mediated RAG healing" in the UI
-              matchedOn,
-            };
-
-            // Only count as "healing" if there was a cached selector that broke.
-            // First-time discoveries aren't healing — they're just learning.
             if (cachedSelectorBroken) {
+              // ✅ TRUE HEALING — record the old→new diff for the UI panel
+              const oldSelector = cached?.selector ?? "";
+              const newSelector =
+                matched.selectors.css || matched.selectors.xpath || matched.selectors.testId || "";
+
+              const matchedOn = {
+                text: !!cached?.metadata?.text && cached.metadata.text === matched.text,
+                role:
+                  !!cached?.metadata?.role &&
+                  cached.metadata.role === (matched.attributes?.role as string | undefined),
+                tag: !!cached?.metadata?.tagName && cached.metadata.tagName === matched.tagName,
+                attrs:
+                  !!cached?.metadata?.placeholder &&
+                  cached.metadata.placeholder ===
+                    (matched.attributes?.placeholder as string | undefined),
+              };
+
+              healing = {
+                attempted: true,
+                successful: true,
+                oldSelector,
+                newSelector,
+                selectorType: "css",
+                confidence: llmResult.confidence,
+                method: "vector-db", // LLM-mediated RAG healing
+                matchedOn,
+              };
               healedSteps++;
+              console.log(`✅ HEALER: ${oldSelector} → ${newSelector} (${(llmResult.confidence * 100).toFixed(0)}%)`);
+            } else if (firstTimeDiscovery) {
+              // 🧠 First-time discovery — the Thinker just decided what to do.
+              // This is NOT a healing event. healing.attempted stays false.
+              console.log(
+                `🧠 THINKER: chose ${matched.selectors.css || matched.selectors.xpath || matched.id} (${(llmResult.confidence * 100).toFixed(0)}%)`
+              );
             }
           }
         } else {
-          healing = {
-            attempted: true,
-            successful: false,
-            oldSelector: cached?.selector ?? "",
-            confidence: 0,
-            method: "failed",
-          };
+          // LLM couldn't find an element. If we had a cached selector that
+          // broke, that's a failed healing event. Otherwise it's a Thinker
+          // dead-end (we'll fail the step below).
+          if (cachedSelectorBroken) {
+            healing = {
+              attempted: true,
+              successful: false,
+              oldSelector: cached?.selector ?? "",
+              confidence: 0,
+              method: "failed",
+            };
+            console.log("❌ HEALER: failed to recover selector");
+          } else {
+            console.log("❌ THINKER: could not pick an element for this step");
+          }
         }
       }
 

@@ -339,7 +339,7 @@ export async function llmHeal(
   candidates: ActionableElement[],
   config: AIModelConfig
 ): Promise<LlmHealResult> {
-  console.log(`🤖 LLM Healer: Searching for an element that satisfies "${descriptor}"`);
+  console.log(`🤖 LLM: searching for an element that satisfies "${descriptor}"`);
 
   if (candidates.length === 0) {
     return {
