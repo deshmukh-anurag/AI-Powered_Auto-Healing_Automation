@@ -167,6 +167,9 @@ export async function findPersistentSelector(
 
     // 1a. PREFERRED: deterministic step-number lookup. This is the only path
     //     that's stable across runs when the LLM rewords descriptions.
+    //     CRITICAL: when stepNumber is provided, we MUST NOT fall back to
+    //     semantic search — doing so leaks step N-1's selector into step N's
+    //     slot when there's no entry yet, which corrupts the cache.
     if (stepNumber !== undefined) {
       const stepId = `${testSuiteId}_step_${stepNumber}`;
       const stepMatch = await collection.get({ ids: [stepId] });
@@ -187,6 +190,11 @@ export async function findPersistentSelector(
           },
         };
       }
+
+      // Step number was provided but no entry exists for this step yet —
+      // this is a fresh step, treat as cache miss (no semantic fallback).
+      console.log(`🔍 Vector DB: no cached selector yet for step ${stepNumber} (first time)`);
+      return null;
     }
 
     // 1b. LEGACY: exact description lookup (kept for backwards compat with

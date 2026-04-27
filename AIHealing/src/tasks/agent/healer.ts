@@ -7,9 +7,10 @@
 // ============================================================================
 
 import type { ActionableElement, ElementSelectors } from "./observer";
-import type { Action } from "./thinker";
+import type { Action, AIModelConfig } from "./thinker";
 import { vectorSimilaritySearch, type VectorSearchResult } from "./vectorDB";
 import { generateElementEmbedding, type EmbeddingConfig } from "./embeddings";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // ============================================================================
 // TYPES
@@ -309,4 +310,223 @@ export function recordFailure(
     timestamp: new Date(),
     successful: false,
   };
+}
+
+// ============================================================================
+// LLM-BASED HEALING (Plan-then-Execute architecture)
+// ============================================================================
+// When a step's cached selector no longer matches anything in the current DOM,
+// we call this function. It hands the broken step's USER INTENT (the
+// descriptor) plus the fresh DOM to an LLM and asks: "which element on this
+// page satisfies this intent?".
+//
+// This is the canonical "RAG healing" path:
+//   - Retrieve  → cached descriptor pulled from vector DB
+//   - Augment   → that descriptor + the current DOM
+//   - Generate  → LLM picks the best matching element id
+// ============================================================================
+
+export interface LlmHealResult {
+  healed: boolean;
+  elementId: string | null; // refers to ActionableElement.id in the snapshot
+  confidence: number; // 0-1, self-reported by the LLM
+  reasoning: string;
+}
+
+export async function llmHeal(
+  descriptor: string,
+  expectedAction: string,
+  candidates: ActionableElement[],
+  config: AIModelConfig
+): Promise<LlmHealResult> {
+  console.log(`🤖 LLM Healer: Searching for an element that satisfies "${descriptor}"`);
+
+  if (candidates.length === 0) {
+    return {
+      healed: false,
+      elementId: null,
+      confidence: 0,
+      reasoning: "No candidate elements were available in the current DOM.",
+    };
+  }
+
+  const prompt = buildHealerPrompt(descriptor, expectedAction, candidates);
+  const response = await callHealerLLM(prompt, config);
+  const parsed = parseHealerResponse(response);
+
+  if (!parsed.elementId) {
+    console.log("❌ LLM Healer: could not identify a matching element");
+    return {
+      healed: false,
+      elementId: null,
+      confidence: parsed.confidence,
+      reasoning: parsed.reasoning,
+    };
+  }
+
+  // Verify the LLM's pick actually exists in the candidate list (defence
+  // against hallucinated ids).
+  const valid = candidates.some((el) => el.id === parsed.elementId);
+  if (!valid) {
+    console.log(`⚠️  LLM Healer: returned unknown element id "${parsed.elementId}" — rejecting`);
+    return {
+      healed: false,
+      elementId: null,
+      confidence: 0,
+      reasoning: `LLM returned id "${parsed.elementId}" which isn't in the candidate list (likely hallucination).`,
+    };
+  }
+
+  console.log(`✅ LLM Healer: matched "${descriptor}" → element ${parsed.elementId} (${(parsed.confidence * 100).toFixed(0)}% confidence)`);
+  return {
+    healed: true,
+    elementId: parsed.elementId,
+    confidence: parsed.confidence,
+    reasoning: parsed.reasoning,
+  };
+}
+
+function buildHealerPrompt(
+  descriptor: string,
+  expectedAction: string,
+  candidates: ActionableElement[]
+): string {
+  // Trim and prioritise the candidate list (same heuristic as the Thinker).
+  const trimmed = [...candidates]
+    .sort((a, b) => {
+      const ap = ["button", "input", "a", "select", "textarea"].includes(a.tagName.toLowerCase()) ? 1 : 0;
+      const bp = ["button", "input", "a", "select", "textarea"].includes(b.tagName.toLowerCase()) ? 1 : 0;
+      return bp - ap;
+    })
+    .slice(0, 80);
+
+  const elementsBlock = trimmed
+    .map((el) => {
+      const text = (el.text || "").trim().slice(0, 60);
+      const attrs = el.attributes || {};
+      const placeholder = attrs.placeholder || "";
+      const aria = attrs["aria-label"] || (attrs as any).ariaLabel || "";
+      const role = attrs.role || "";
+      const detail = [
+        text && `text:"${text}"`,
+        placeholder && `placeholder:"${placeholder}"`,
+        aria && `aria:"${aria}"`,
+        role && `role:"${role}"`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return `[${el.id}] ${el.tagName.toLowerCase()} ${detail}`.trim();
+    })
+    .join("\n");
+
+  return `You are a self-healing test automation agent. The selector for the step below no longer matches anything on the page (the page was likely redesigned). Find the element that satisfies the user intent.
+
+STEP DESCRIPTOR (user intent):
+"${descriptor}"
+
+EXPECTED ACTION TYPE: ${expectedAction}
+
+ACTIONABLE ELEMENTS ON THE CURRENT PAGE:
+${elementsBlock}
+
+INSTRUCTIONS:
+1. Pick exactly one element id whose role/text/placeholder/aria best satisfies the descriptor.
+2. Prefer matches by visible text or aria-label. Then placeholder. Then role+tag.
+3. If NO element on the page reasonably matches the intent, return elementId: null.
+4. Confidence should reflect how unambiguous the match is (1.0 = identical text, 0.5 = inferred from context, 0.0 = no match).
+
+OUTPUT FORMAT (strict JSON, no markdown):
+{
+  "elementId": "el_3",
+  "confidence": 0.95,
+  "reasoning": "Element [el_3] is a BUTTON with visible text 'Search' which exactly matches the user intent 'Click the Search button'."
+}
+
+If no element matches:
+{
+  "elementId": null,
+  "confidence": 0.0,
+  "reasoning": "No element on this page corresponds to the requested user intent."
+}`;
+}
+
+async function callHealerLLM(prompt: string, config: AIModelConfig): Promise<string> {
+  if (config.model === "gemini-flash" || config.model === "gemini-pro") {
+    try {
+      return await callHealerGemini(prompt, config);
+    } catch (geminiErr: any) {
+      console.warn("⚠️ LLM Healer: Gemini failed, falling back to Llama 3.3:", geminiErr.message);
+      try {
+        return await callHealerGroq(prompt, "llama-3.3-70b-versatile");
+      } catch (l33Err: any) {
+        console.warn("⚠️ LLM Healer: Llama 3.3 failed, cascading to Llama 3.1:", l33Err.message);
+        return await callHealerGroq(prompt, "llama-3.1-8b-instant");
+      }
+    }
+  }
+  throw new Error(`LLM Healer: Unsupported model ${config.model}`);
+}
+
+async function callHealerGemini(prompt: string, config: AIModelConfig): Promise<string> {
+  const genAI = new GoogleGenerativeAI(config.apiKey);
+  const modelName = config.model === "gemini-flash" ? "gemini-2.5-flash" : "gemini-2.5-pro";
+  const model = genAI.getGenerativeModel({
+    model: modelName,
+    generationConfig: {
+      temperature: 0.1, // Healing should be deterministic
+      maxOutputTokens: 600,
+      responseMimeType: "application/json",
+    },
+  });
+  const result = await model.generateContent(prompt);
+  return result.response.text();
+}
+
+async function callHealerGroq(prompt: string, modelName: string): Promise<string> {
+  const apiKey = process.env.GROQ_API_KEY || process.env.GROK_API_KEY;
+  if (!apiKey) throw new Error("No GROQ_API_KEY in env for LLM healer fallback.");
+
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: modelName,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.1,
+      max_tokens: 600,
+      response_format: { type: "json_object" },
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`LLM healer fallback API error: ${response.status} ${errText}`);
+  }
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content;
+  if (!text) throw new Error("LLM healer fallback returned empty content.");
+  return text;
+}
+
+function parseHealerResponse(response: string): {
+  elementId: string | null;
+  confidence: number;
+  reasoning: string;
+} {
+  let cleaned = response.trim();
+  if (cleaned.startsWith("```json")) cleaned = cleaned.replace(/^```json\n/, "").replace(/\n```$/, "");
+  else if (cleaned.startsWith("```")) cleaned = cleaned.replace(/^```\n/, "").replace(/\n```$/, "");
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    return {
+      elementId: parsed.elementId === null || parsed.elementId === undefined ? null : String(parsed.elementId),
+      confidence: typeof parsed.confidence === "number" ? Math.max(0, Math.min(1, parsed.confidence)) : 0,
+      reasoning: typeof parsed.reasoning === "string" ? parsed.reasoning : "",
+    };
+  } catch (err) {
+    console.error("❌ LLM Healer: failed to parse response:", err);
+    return { elementId: null, confidence: 0, reasoning: "Healer response was unparseable." };
+  }
 }

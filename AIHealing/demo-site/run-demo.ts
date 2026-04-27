@@ -15,10 +15,15 @@
 import "dotenv/config";
 import puppeteer from "puppeteer";
 import { runAgentLoop, type AgentConfig } from "../src/tasks/agent/index";
+import { runPlanExecuteAgent, type PlanExecuteConfig } from "../src/tasks/agent/planExecute";
 import { clearGoldenStates } from "../src/tasks/agent/vectorDB";
 
 const [, , startUrlArg, goalArg] = process.argv;
 const SHOULD_CLEAR = process.env.HEALING_DEMO_CLEAR === "1";
+
+// Set HEALING_DEMO_AGENT=legacy to use the old per-step Thinker loop.
+// Default is the new Plan-then-Execute agent.
+const USE_LEGACY = process.env.HEALING_DEMO_AGENT === "legacy";
 
 if (!startUrlArg || !goalArg) {
   console.error("Usage: npx tsx demo-site/run-demo.ts <startUrl> \"<goal>\"");
@@ -56,11 +61,11 @@ async function main() {
     console.log(`➡️  Navigating to ${startUrlArg}...`);
     await page.goto(startUrlArg, { waitUntil: "domcontentloaded" });
 
-    const config: AgentConfig = {
+    const sharedConfig = {
       // Make goal completion explicit so the LLM marks done after clicking
       goal: `${goalArg} The goal is achieved as soon as the Add to Cart button has been clicked. Do NOT verify or check anything afterwards.`,
       startUrl: startUrlArg,
-      maxSteps: 4,
+      maxSteps: 6,
       timeout: 8000,
       aiModel: {
         model: "gemini-flash" as any,
@@ -68,13 +73,19 @@ async function main() {
       },
       testSuiteId: SUITE_ID,
       embeddingConfig: {
-        provider: "gemini",
+        provider: "gemini" as const,
         apiKey: GEMINI_KEY,
       },
     };
 
-    console.log("▶️  Running agent loop...");
-    const result = await runAgentLoop(page, config);
+    let result;
+    if (USE_LEGACY) {
+      console.log("▶️  Running LEGACY per-step agent loop...");
+      result = await runAgentLoop(page, sharedConfig as AgentConfig);
+    } else {
+      console.log("▶️  Running PLAN-EXECUTE agent (single planner call + per-step healing)...");
+      result = await runPlanExecuteAgent(page, sharedConfig as PlanExecuteConfig);
+    }
 
     console.log("");
     console.log("─────────────────────────────────────────────");
