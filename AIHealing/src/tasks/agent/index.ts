@@ -218,9 +218,8 @@ export async function runAgentLoop(
         attempted: false,
         successful: false,
       };
-      let proactiveHealApplied = false;
 
-      if (knownSelector && knownSelector.confidence > 0.85) {
+      if (knownSelector && knownSelector.confidence > 0.3) {
         console.log(`✅ Found persistent selector from previous run (${(knownSelector.confidence * 100).toFixed(1)}% confidence)`);
 
         const cachedSelectorMatch = snapshot.actionableElements.find(
@@ -291,7 +290,6 @@ export async function runAgentLoop(
               action.targetElementId = replacement.id;
               healedSteps++;
               healingSuccessful = true;
-              proactiveHealApplied = true;
 
               const matchedOn = {
                 text: !!staleBrokenElement.text && staleBrokenElement.text === replacement.text,

@@ -189,19 +189,24 @@ export async function findPersistentSelector(
 
     if (results.ids[0]?.length > 0 && results.distances && results.distances[0]?.length > 0) {
       const distance = results.distances[0][0];
-      
+
       if (distance === null || distance === undefined) {
+        console.log("🔍 Vector DB: nearest neighbour had null distance — skipping");
         return null;
       }
-      
-      const confidence = 1 - distance; // Convert distance to similarity (0-1)
-      
-      // Only use if confidence is high enough (>0.85)
-      if (confidence > 0.85) {
+
+      const confidence = 1 - distance; // L2 distance → similarity (0-1)
+
+      // Permissive threshold — Llama vs Gemini can phrase the same action
+      // very differently between runs, so we accept anything above ~30%.
+      // Demo correctness > production strictness here.
+      const THRESHOLD = 0.3;
+      console.log(`🔍 Vector DB: nearest neighbour confidence ${(confidence * 100).toFixed(1)}% (threshold ${THRESHOLD * 100}%)`);
+
+      if (confidence > THRESHOLD) {
         const metadata = results.metadatas[0]?.[0] as any;
-        
         console.log(`🔍 Found similar persistent selector with ${(confidence * 100).toFixed(1)}% confidence`);
-        
+
         return {
           selector: metadata.selector,
           selectorType: metadata.selectorType,
@@ -215,6 +220,8 @@ export async function findPersistentSelector(
           },
         };
       }
+    } else {
+      console.log("🔍 Vector DB: no neighbours returned for this suite");
     }
 
     return null;
