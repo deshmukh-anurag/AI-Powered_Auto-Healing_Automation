@@ -87,13 +87,18 @@ export async function saveGoldenState(
   selector: string,
   selectorType: "css" | "xpath" | "testId" | "aria",
   element: ActionableElement,
-  embedding: number[]
+  embedding: number[],
+  stepNumber?: number
 ): Promise<void> {
   try {
     const collection = await getCollection();
-    
-    // Create a unique ID for this step
-    const id = `${testSuiteId}_${stepDescription.replace(/\s+/g, "_")}`;
+
+    // Prefer deterministic step-number keying when provided so that the cache
+    // is stable across runs even when the LLM phrases descriptions differently.
+    // Fall back to description-based ID for callers that don't pass stepNumber.
+    const id = stepNumber !== undefined
+      ? `${testSuiteId}_step_${stepNumber}`
+      : `${testSuiteId}_${stepDescription.replace(/\s+/g, "_")}`;
     
     const metadata: GoldenState["elementMetadata"] = {
       tagName: element.tagName,
@@ -154,15 +159,41 @@ export async function saveGoldenState(
 export async function findPersistentSelector(
   testSuiteId: string,
   stepDescription: string,
-  embedding: number[]
+  embedding: number[],
+  stepNumber?: number
 ): Promise<VectorSearchResult | null> {
   try {
     const collection = await getCollection();
-    
-    // 1. Try exact ID lookup first (fastest and most accurate if description is stable)
+
+    // 1a. PREFERRED: deterministic step-number lookup. This is the only path
+    //     that's stable across runs when the LLM rewords descriptions.
+    if (stepNumber !== undefined) {
+      const stepId = `${testSuiteId}_step_${stepNumber}`;
+      const stepMatch = await collection.get({ ids: [stepId] });
+
+      if (stepMatch.ids.length > 0) {
+        const metadata = stepMatch.metadatas[0] as any;
+        console.log(`🔍 Found cached selector for step ${stepNumber}: "${metadata.selector}" (saved for: "${metadata.stepDescription}")`);
+        return {
+          selector: metadata.selector,
+          selectorType: metadata.selectorType,
+          confidence: 1.0,
+          metadata: {
+            tagName: metadata.tagName,
+            text: metadata.text,
+            role: metadata.role,
+            type: metadata.type,
+            placeholder: metadata.placeholder,
+          },
+        };
+      }
+    }
+
+    // 1b. LEGACY: exact description lookup (kept for backwards compat with
+    //     callers that don't pass stepNumber, e.g. the healer's RAG strategy).
     const id = `${testSuiteId}_${stepDescription.replace(/\s+/g, "_")}`;
     const exactMatch = await collection.get({ ids: [id] });
-    
+
     if (exactMatch.ids.length > 0) {
       const metadata = exactMatch.metadatas[0] as any;
       console.log(`🔍 Found exact persistent selector for: ${stepDescription}`);
@@ -240,11 +271,14 @@ export async function updatePersistentSelector(
   stepDescription: string,
   newSelector: string,
   selectorType: "css" | "xpath" | "testId" | "aria",
-  embedding: number[]
+  embedding: number[],
+  stepNumber?: number
 ): Promise<void> {
   try {
     const collection = await getCollection();
-    const id = `${testSuiteId}_${stepDescription.replace(/\s+/g, "_")}`;
+    const id = stepNumber !== undefined
+      ? `${testSuiteId}_step_${stepNumber}`
+      : `${testSuiteId}_${stepDescription.replace(/\s+/g, "_")}`;
     
     // Fetch existing metadata to avoid losing fields
     const existing = await collection.get({ ids: [id] });
@@ -287,17 +321,30 @@ export async function vectorSimilaritySearch(
     );
 
     if (knownSelector) {
-      return knownSelector;
+      // CRITICAL: Validate that the cached selector still exists in the current
+      // DOM. If it doesn't, the cached result is stale (selector drift) — we
+      // MUST return null so the healer falls through to text/structural
+      // similarity strategies that actually inspect the live DOM. Without this
+      // check, the healer would "heal" by returning the same broken selector.
+      const t = knownSelector.selectorType;
+      const stillExists = currentElements.some(el => {
+        if (t === "css") return el.selectors.css === knownSelector.selector;
+        if (t === "xpath") return el.selectors.xpath === knownSelector.selector;
+        if (t === "testId") return el.selectors.testId === knownSelector.selector;
+        if (t === "aria") return el.selectors.ariaLabel === knownSelector.selector;
+        return false;
+      });
+
+      if (stillExists) {
+        return knownSelector;
+      }
+
+      console.log(`⚠️  Cached selector "${knownSelector.selector}" not found in current DOM — falling through to similarity-based healing`);
+      return null;
     }
 
-    // If not in DB, we need to search current page elements
-    // Generate embeddings for all current elements and find best match
-    console.log("🔍 No persistent selector found, searching current page...");
-    
-    // This would require generating embeddings for all current elements
-    // and comparing them to the target embedding
-    // For now, return null (fallback to simple healer)
-    
+    // If not in DB, fall through to non-RAG healing strategies
+    console.log("🔍 No persistent selector found, falling through to similarity-based healing");
     return null;
   } catch (error) {
     console.error("❌ Vector similarity search failed:", error);

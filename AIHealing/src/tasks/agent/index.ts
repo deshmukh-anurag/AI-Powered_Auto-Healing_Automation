@@ -208,7 +208,8 @@ export async function runAgentLoop(
       const knownSelector = await findPersistentSelector(
         config.testSuiteId,
         action.description,
-        actionEmbedding
+        actionEmbedding,
+        step // deterministic step-number key — stable across runs
       );
 
       // Pre-declared so the healing block below can read these
@@ -320,7 +321,8 @@ export async function runAgentLoop(
                   action.description,
                   healingResult.healedSelector,
                   healingResult.selectorType || "css",
-                  elementEmbedding
+                  elementEmbedding,
+                  step
                 );
               } catch (e) {
                 console.warn("⚠️  Failed to update vector DB with healed selector:", e);
@@ -426,7 +428,8 @@ export async function runAgentLoop(
                   action.description,
                   healingResult.healedSelector,
                   healingResult.selectorType || "css",
-                  elementEmbedding
+                  elementEmbedding,
+                  step
                 );
               }
               
@@ -462,7 +465,8 @@ export async function runAgentLoop(
             selectorUsed,
             selectorType,
             targetElement,
-            elementEmbedding
+            elementEmbedding,
+            step
           );
         } catch (error) {
           console.warn("⚠️  Failed to save golden state:", error);
